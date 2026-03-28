@@ -1,11 +1,13 @@
 ---
 name: ralph-help
-description: Explain how the Codex Ralph package is installed and how its loop works.
+description: Explain how the Codex Ralph package works, including installation, loop continuation, completion token behavior, storage paths, and related commands. Use when the user asks what Ralph is, how to set it up, or why the loop continues or stops.
 ---
 
 # Codex Ralph Help
 
-## Skills
+Explain Ralph succinctly, then tailor the rest to the user's question.
+
+## Commands
 
 - `$install-ralph` installs Ralph into the current user profile.
 - `$uninstall-ralph` removes Ralph from the current user profile.
@@ -14,7 +16,7 @@ description: Explain how the Codex Ralph package is installed and how its loop w
 - `$cancel-ralph` stops the current loop.
 - `$ralph-help` explains setup and runtime behavior.
 
-## Bootstrap installer
+## Installation
 
 Bootstrap from the cloned package root:
 
@@ -22,16 +24,19 @@ Bootstrap from the cloned package root:
 bash <codex-ralph-root>/skills/install-ralph/scripts/install_ralph.sh
 ```
 
+`$install-ralph` can also install only skills or only hooks with `--skills-only` or `--hooks-only`.
+
+## Runtime
+
+- Workspace state lives in `.codex/ralph/state.json`.
+- User hook helpers live in `~/.codex/hooks/ralph/`.
+- User skill symlinks live in `~/.agents/skills/`.
+- The Stop hook continues unfinished turns until the assistant truthfully emits the completion token.
+
 ## Completion rule
 
-A Ralph loop only ends automatically when the assistant truthfully outputs:
+The default Ralph loop only ends automatically when the assistant truthfully outputs:
 
 ```text
 <promise>DONE</promise>
 ```
-
-## Storage
-
-- Workspace state: `.codex/ralph/state.json`
-- User hook helpers: `~/.codex/hooks/ralph/`
-- User skill symlinks: `~/.agents/skills/`

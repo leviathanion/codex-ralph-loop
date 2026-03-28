@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ralph Help"
+  short_description: "Explain Ralph setup and loop behavior"
+  default_prompt: "Use $ralph-help to explain how Ralph is installed and how its loop behaves."

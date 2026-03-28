@@ -47,6 +47,7 @@ if not found:
 
 hooks_path.parent.mkdir(parents=True, exist_ok=True)
 hooks_path.write_text(json.dumps(data, indent=2, ensure_ascii=True) + "\n")
+print("unchanged" if found else "added")
 PY
 }
 
@@ -63,7 +64,12 @@ from pathlib import Path
 
 hooks_path = Path(sys.argv[1])
 stop_command = sys.argv[2]
-data = json.loads(hooks_path.read_text())
+
+try:
+    data = json.loads(hooks_path.read_text())
+except Exception:
+    raise SystemExit(0)
+
 registry = data.get("hooks", {})
 
 changed = []

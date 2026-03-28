@@ -1,6 +1,6 @@
 ---
 name: continue-ralph-loop
-description: Continue an existing Ralph loop in the current workspace.
+description: Resume an existing Ralph loop in the current workspace from `.codex/ralph/state.json`. Use when the user wants to continue, resume, retry, or recover an unfinished Ralph loop after a previous turn stopped early.
 ---
 
 # Continue Ralph Loop
@@ -18,10 +18,9 @@ Continue the active Codex Ralph loop in the current workspace.
    - the current repository state
    - the stored `prompt`
    - the stored `iteration`, `max_iterations`, and `completion_token`
-7. Only stop when the task is fully and verifiably complete and the completion token is truthfully appropriate.
+7. Only finish the loop when the task is fully and verifiably complete and the stored completion token is truthfully appropriate.
 
 ## Notes
 
-- Use this skill when an active Ralph loop exists and you want to resume it explicitly.
 - The Ralph `Stop` hook must already be installed. If it is missing, tell the user to run `$install-ralph`.
 - Use `$cancel-ralph` to stop the active loop.

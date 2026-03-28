@@ -61,64 +61,114 @@ install_skills() {
 
 install_hooks() {
   mkdir -p "${TARGET_HOOKS}"
-  local name
+  local name source target register_status
   for name in "${RALPH_HOOK_NAMES[@]}"; do
-    cp "${HOOKS_SOURCE}/${name}" "${TARGET_HOOKS}/${name}"
-    CHANGES+=("copied hook ${name}")
+    source="${HOOKS_SOURCE}/${name}"
+    target="${TARGET_HOOKS}/${name}"
+    if [[ ! -f "${target}" ]] || ! cmp -s "${source}" "${target}"; then
+      cp "${source}" "${target}"
+      CHANGES+=("copied hook ${name}")
+    fi
   done
 
   local stop_hook_script stop_command
   stop_hook_script="${TARGET_HOOKS}/${RALPH_STOP_HOOK_FILE}"
   stop_command="$(ralph_stop_hook_command "${stop_hook_script}")"
 
-  ralph_register_stop_hook "${HOOKS_JSON}" "${stop_hook_script}"
+  register_status="$(ralph_register_stop_hook "${HOOKS_JSON}" "${stop_hook_script}")"
 
   if ! grep -Fq "\"command\": \"${stop_command}\"" "${HOOKS_JSON}"; then
     echo "failed to register Stop hook" >&2
     exit 1
   fi
 
-  CHANGES+=("registered Stop hook")
+  if [[ "${register_status}" == "added" ]]; then
+    CHANGES+=("registered Stop hook")
+  fi
 }
 
 ensure_feature_flag() {
   mkdir -p "$(dirname -- "${CONFIG_TOML}")"
-  if [[ -f "${CONFIG_TOML}" ]] && grep -Fq "codex_hooks = true" "${CONFIG_TOML}"; then
-    return
-  fi
-
-  if [[ -f "${CONFIG_TOML}" ]] && grep -Fq "[features]" "${CONFIG_TOML}"; then
-    python3 - "${CONFIG_TOML}" <<'PY'
+  local feature_status
+  feature_status="$(python3 - "${CONFIG_TOML}" <<'PY'
 import sys
 from pathlib import Path
+import re
 
 path = Path(sys.argv[1])
-lines = path.read_text().splitlines()
+header_pattern = re.compile(r"^\s*\[[^][]+\]\s*$")
+assignment_pattern = re.compile(r"^\s*codex_hooks\s*=")
+
+if path.exists():
+    lines = path.read_text().splitlines()
+else:
+    lines = []
+
+section_start = None
 for idx, line in enumerate(lines):
     if line.strip() == "[features]":
-        insert_at = idx + 1
-        while insert_at < len(lines) and not lines[insert_at].startswith("["):
-            insert_at += 1
-        lines.insert(insert_at, "codex_hooks = true")
-        path.write_text("\n".join(lines).rstrip() + "\n")
+        section_start = idx
         break
-PY
-    CHANGES+=("enabled codex_hooks feature flag")
-    return
-  fi
 
-  {
-    if [[ -f "${CONFIG_TOML}" ]]; then
-      cat "${CONFIG_TOML}"
-      if [[ -s "${CONFIG_TOML}" ]]; then
-        printf '\n'
-      fi
-    fi
-    printf '[features]\n'
-    printf 'codex_hooks = true\n'
-  } > "${CONFIG_TOML}.tmp"
-  mv "${CONFIG_TOML}.tmp" "${CONFIG_TOML}"
-  CHANGES+=("created [features] section with codex_hooks = true")
+if section_start is None:
+    new_lines = list(lines)
+    if new_lines and new_lines[-1] != "":
+        new_lines.append("")
+    new_lines.extend(["[features]", "codex_hooks = true"])
+    path.write_text("\n".join(new_lines).rstrip() + "\n")
+    print("created")
+    raise SystemExit(0)
+
+section_end = len(lines)
+for idx in range(section_start + 1, len(lines)):
+    if header_pattern.match(lines[idx]):
+        section_end = idx
+        break
+
+section_lines = lines[section_start + 1:section_end]
+active_indexes = []
+for idx, line in enumerate(section_lines):
+    stripped = line.lstrip()
+    if stripped.startswith("#") or stripped.startswith(";"):
+        continue
+    if assignment_pattern.match(line):
+        active_indexes.append(idx)
+
+updated_section = list(section_lines)
+if not active_indexes:
+    updated_section.append("codex_hooks = true")
+    status = "updated"
+else:
+    first = active_indexes[0]
+    updated_section[first] = "codex_hooks = true"
+    for idx in reversed(active_indexes[1:]):
+        updated_section.pop(idx)
+    status = "unchanged" if section_lines == updated_section else "updated"
+
+if status == "unchanged":
+    print(status)
+    raise SystemExit(0)
+
+new_lines = lines[:section_start + 1] + updated_section + lines[section_end:]
+path.write_text("\n".join(new_lines).rstrip() + "\n")
+print(status)
+PY
+)"
+
+  case "${feature_status}" in
+    unchanged)
+      ;;
+    created)
+      CHANGES+=("created [features] section with codex_hooks = true")
+      ;;
+    updated)
+      CHANGES+=("enabled codex_hooks feature flag")
+      ;;
+    *)
+      echo "unexpected feature flag update status: ${feature_status}" >&2
+      exit 1
+      ;;
+  esac
 }
 
 case "${MODE}" in

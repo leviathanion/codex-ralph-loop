@@ -1,6 +1,6 @@
 ---
 name: ralph-loop
-description: Start an explicit Ralph loop for the current Codex workspace and rely on the Stop hook to continue unfinished work.
+description: Start or restart an explicit Ralph loop for the current workspace by writing `.codex/ralph/state.json` and relying on the Stop hook to continue unfinished work. Use when the user explicitly wants unattended multi-turn continuation for a repository task.
 ---
 
 # Ralph Loop
@@ -37,3 +37,4 @@ bash <codex-ralph-root>/skills/install-ralph/scripts/install_ralph.sh
 ```
 
 - Use `$cancel-ralph` to stop the active loop.
+- Use `$continue-ralph-loop` to resume an active loop manually.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cancel Ralph"
+  short_description: "Stop or clear the active Ralph loop"
+  default_prompt: "Use $cancel-ralph to stop the active Ralph loop in this workspace."

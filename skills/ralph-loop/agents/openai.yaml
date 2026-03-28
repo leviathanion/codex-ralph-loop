@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ralph Loop"
+  short_description: "Start a workspace-local Ralph loop"
+  default_prompt: "Use $ralph-loop to start a Ralph continuation loop for the current workspace task."

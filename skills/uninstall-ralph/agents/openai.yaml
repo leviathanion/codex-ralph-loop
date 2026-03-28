@@ -1,0 +1,4 @@
+interface:
+  display_name: "Uninstall Ralph"
+  short_description: "Remove Ralph skills and hooks locally"
+  default_prompt: "Use $uninstall-ralph to remove Ralph from this Codex user profile."

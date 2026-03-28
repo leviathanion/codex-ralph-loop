@@ -1,0 +1,4 @@
+interface:
+  display_name: "Continue Ralph Loop"
+  short_description: "Resume an unfinished Ralph loop safely"
+  default_prompt: "Use $continue-ralph-loop to resume the unfinished Ralph loop in this workspace."
