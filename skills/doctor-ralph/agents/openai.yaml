@@ -1,0 +1,4 @@
+interface:
+  display_name: "Doctor Ralph"
+  short_description: "Validate Ralph installation and workspace state"
+  default_prompt: "Use $doctor-ralph to validate the Ralph installation and the current workspace state."
