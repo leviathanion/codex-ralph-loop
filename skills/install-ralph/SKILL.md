@@ -16,3 +16,4 @@ Install Codex Ralph into this user profile.
 5. After the command finishes, summarize what changed.
 6. If the command reports that Ralph is already installed, say so plainly.
 7. If skills do not appear immediately, tell the user to restart Codex.
+8. Do not run multiple install/uninstall commands in parallel against the same user profile; that concurrency is out of scope for Ralph's installer.

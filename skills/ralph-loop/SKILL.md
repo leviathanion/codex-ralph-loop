@@ -1,6 +1,6 @@
 ---
 name: ralph-loop
-description: Start or restart an explicit Ralph loop for the current workspace by writing `.codex/ralph/state.json` and relying on the Stop hook to continue unfinished work. Use when the user explicitly wants unattended multi-turn continuation for a repository task.
+description: Start an explicit Ralph loop for the current workspace by writing `.codex/ralph/state.json` and relying on the Stop hook to continue unfinished work. Use when the user explicitly wants unattended multi-turn continuation for a repository task.
 ---
 
 # Ralph Loop
@@ -19,13 +19,14 @@ EOF
 ```
 
 3. If the script fails, surface the error to the user instead of inventing or partially repairing Ralph state by hand.
+   If it reports an existing active loop, tell the user to use `$continue-ralph-loop` or `$cancel-ralph` before starting a new loop.
 4. Begin working on the task immediately.
 5. Every unfinished assistant response must end with exactly one status block as its final non-whitespace content:
 
 ```text
 ---RALPH_STATUS---
 STATUS: progress|no_progress|blocked|complete
-SUMMARY: <single-line summary, 200 chars max>
+SUMMARY: <non-empty single-line summary, 200 chars max>
 FILES: path/a, path/b
 CHECKS: passed:npm test; failed:pytest -q
 ---END_RALPH_STATUS---
@@ -35,8 +36,9 @@ CHECKS: passed:npm test; failed:pytest -q
    Put the token on the final non-whitespace line by itself.
    If you also include a `RALPH_STATUS` block before that token, it must report `STATUS: complete`.
    If an unfinished-turn status block is missing or malformed, Ralph will stop instead of silently continuing.
-7. `FILES` is split on commas and `CHECKS` is split on semicolons. Do not put a literal comma inside one file item or a literal semicolon inside one check item; split or summarize instead.
-8. Do not include the literal status markers inside `SUMMARY`, `FILES`, or `CHECKS`.
+7. Use exactly those four fields and no extras.
+8. `FILES` is split on commas and `CHECKS` is split on semicolons. Do not put a literal comma inside one file item or a literal semicolon inside one check item; split or summarize instead.
+9. Do not include the literal status markers inside `SUMMARY`, `FILES`, or `CHECKS`.
 
 ## Preconditions
 
@@ -48,5 +50,6 @@ bash <codex-ralph-root>/skills/install-ralph/scripts/install_ralph.sh
 ```
 
 - Use `$cancel-ralph` to stop the active loop.
+- `$ralph-loop` does not replace an active or invalid state file in place; cancel or repair first.
 - Use `$continue-ralph-loop` to resume an active loop manually.
 - Use `$doctor-ralph` to diagnose installation or workspace state problems.

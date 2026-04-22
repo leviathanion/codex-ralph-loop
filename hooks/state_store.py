@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +14,7 @@ from common import (
     ALLOWED_PHASES,
     DEFAULT_COMPLETION_TOKEN,
     DEFAULT_MAX_ITERATIONS,
+    LOCK_RELATIVE_PATH,
     LEDGER_PROGRESS_STATUSES,
     PROGRESS_RELATIVE_PATH,
     STATE_RELATIVE_PATH,
@@ -19,7 +22,8 @@ from common import (
     state_path,
     symlink_component_error,
     symlink_parent_error,
-    workspace_root,
+    workspace_path,
+    workspace_root_error,
 )
 
 
@@ -73,11 +77,45 @@ LEGACY_STATE_DEFAULTS = {
 
 
 def _storage_root(cwd: str | None) -> Path:
-    return Path(cwd) if cwd else workspace_root()
+    return workspace_path(cwd)
 
 
 def _managed_storage_error(cwd: str | None, relative_path: Path) -> str | None:
     return symlink_component_error(_storage_root(cwd), relative_path)
+
+
+@contextmanager
+def workspace_lock(cwd: str | None = None):
+    root = _storage_root(cwd)
+    workspace_error = workspace_root_error(root)
+    if workspace_error is not None:
+        raise StorageError(workspace_error)
+
+    path = root / LOCK_RELATIVE_PATH
+    symlink_error = _managed_storage_error(cwd, LOCK_RELATIVE_PATH)
+    if symlink_error is not None:
+        raise StorageError(f'unable to lock {path}: {symlink_error}')
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        raise StorageError(f'unable to lock {path}: {exc}') from exc
+
+    try:
+        with os.fdopen(fd, 'a+', encoding='utf-8') as handle:
+            # Trade-off: one coarse per-workspace lock reduces Ralph's theoretical parallelism,
+            # but it keeps state.json and progress.jsonl updates linearizable across stop/start/
+            # resume/cancel flows. That is the right failure mode here: one workspace loop should
+            # serialize control mutations rather than let concurrent sessions overwrite each other's
+            # claims or silently drop ledger rows.
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError as exc:
+        raise StorageError(f'unable to lock {path}: {exc}') from exc
 
 
 def _write_text_atomic(path: Path, contents: str) -> None:

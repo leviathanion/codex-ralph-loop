@@ -16,9 +16,19 @@ from common import (
     now_iso,
     state_path,
     symlink_component_error,
+    workspace_path,
     workspace_root,
+    workspace_root_error,
 )
-from state_store import StorageError, append_progress_entry, clear_state, default_state, read_state, save_state
+from state_store import (
+    StorageError,
+    append_progress_entry,
+    clear_state,
+    default_state,
+    read_state,
+    save_state,
+    workspace_lock,
+)
 
 
 SnapshotKind = Literal['missing', 'file', 'symlink']
@@ -34,6 +44,12 @@ class StateSnapshot:
 def _state_storage_error(cwd: str | None) -> str | None:
     root = Path(cwd) if cwd else workspace_root()
     return symlink_component_error(root, STATE_RELATIVE_PATH)
+
+
+def _validate_workspace_root(cwd: str | None) -> None:
+    error = workspace_root_error(workspace_path(cwd))
+    if error is not None:
+        raise StorageError(error)
 
 
 def progress_entry(*, iteration: int, status: str, summary: str, reason: str | None = None) -> dict[str, Any]:
@@ -129,6 +145,66 @@ def start_loop(
     if not prompt.strip():
         raise ValueError('prompt must not be empty')
 
+    _validate_workspace_root(cwd)
+    existing_state = read_state(cwd)
+    if existing_state.status == 'invalid_json':
+        raise ValueError(
+            'Ralph state is invalid JSON. Run $cancel-ralph or repair .codex/ralph/state.json before starting a new loop.'
+        )
+    if existing_state.status == 'invalid_schema':
+        raise ValueError(
+            'Ralph state failed schema validation. Run $cancel-ralph or repair .codex/ralph/state.json before starting a new loop.'
+        )
+    if existing_state.status == 'read_error':
+        raise StorageError('; '.join(existing_state.errors))
+    if existing_state.status == 'ok':
+        current_state = existing_state.value
+        assert current_state is not None
+        if current_state['active']:
+            raise ValueError(
+                'An active Ralph loop already exists in this workspace. Use $continue-ralph-loop to resume it, or '
+                '$cancel-ralph before starting a new loop.'
+            )
+
+    with workspace_lock(cwd):
+        return _start_loop_locked(
+            cwd=cwd,
+            prompt=prompt,
+            max_iterations=max_iterations,
+            completion_token=completion_token,
+        )
+
+
+def _start_loop_locked(
+    *,
+    cwd: str | None,
+    prompt: str,
+    max_iterations: int,
+    completion_token: str,
+) -> dict[str, Any]:
+    if not prompt.strip():
+        raise ValueError('prompt must not be empty')
+
+    existing_state = read_state(cwd)
+    if existing_state.status == 'invalid_json':
+        raise ValueError(
+            'Ralph state is invalid JSON. Run $cancel-ralph or repair .codex/ralph/state.json before starting a new loop.'
+        )
+    if existing_state.status == 'invalid_schema':
+        raise ValueError(
+            'Ralph state failed schema validation. Run $cancel-ralph or repair .codex/ralph/state.json before starting a new loop.'
+        )
+    if existing_state.status == 'read_error':
+        raise StorageError('; '.join(existing_state.errors))
+    if existing_state.status == 'ok':
+        current_state = existing_state.value
+        assert current_state is not None
+        if current_state['active']:
+            raise ValueError(
+                'An active Ralph loop already exists in this workspace. Use $continue-ralph-loop to resume it, or '
+                '$cancel-ralph before starting a new loop.'
+            )
+
     timestamp = now_iso()
     state = default_state()
     state.update({
@@ -179,6 +255,41 @@ def start_loop(
 
 
 def resume_loop(*, cwd: str | None) -> dict[str, Any]:
+    _validate_workspace_root(cwd)
+    result = read_state(cwd)
+    if result.status == 'missing':
+        return {
+            'status': 'missing',
+            'message': 'No active Ralph loop state exists in this workspace.',
+        }
+    if result.status == 'invalid_json':
+        return {
+            'status': 'invalid_json',
+            'message': 'Ralph state is invalid JSON. Run $cancel-ralph or repair .codex/ralph/state.json.',
+            'errors': list(result.errors),
+        }
+    if result.status == 'invalid_schema':
+        return {
+            'status': 'invalid_schema',
+            'message': 'Ralph state failed schema validation. Run $cancel-ralph or repair .codex/ralph/state.json.',
+            'errors': list(result.errors),
+        }
+    if result.status == 'read_error':
+        raise StorageError('; '.join(result.errors))
+
+    state = result.value
+    assert state is not None
+    if not state['active']:
+        return {
+            'status': 'inactive',
+            'message': 'The workspace state file exists but there is no active Ralph loop to continue.',
+        }
+
+    with workspace_lock(cwd):
+        return _resume_loop_locked(cwd=cwd)
+
+
+def _resume_loop_locked(*, cwd: str | None) -> dict[str, Any]:
     result = read_state(cwd)
     if result.status == 'missing':
         return {
@@ -261,6 +372,23 @@ def resume_loop(*, cwd: str | None) -> dict[str, Any]:
 
 
 def cancel_loop(*, cwd: str | None) -> dict[str, Any]:
+    _validate_workspace_root(cwd)
+    result = read_state(cwd)
+    if result.status == 'missing':
+        return {
+            'status': 'missing',
+            'message': 'No Ralph loop state was present.',
+        }
+    if result.status == 'read_error':
+        state_file = state_path(cwd)
+        if not state_file.is_symlink():
+            raise StorageError('; '.join(result.errors))
+
+    with workspace_lock(cwd):
+        return _cancel_loop_locked(cwd=cwd)
+
+
+def _cancel_loop_locked(*, cwd: str | None) -> dict[str, Any]:
     state_file = state_path(cwd)
     state_existed = state_file.exists() or state_file.is_symlink()
     result = read_state(cwd)

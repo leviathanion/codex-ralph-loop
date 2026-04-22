@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-from common import progress_path, state_path, symlink_component_error
+from common import progress_path, state_path, symlink_component_error, workspace_root_error
 from hook_registry import (
     build_stop_command,
     inspect_stop_hook_registration,
@@ -84,11 +84,8 @@ def check_workspace_writeable(workspace_root: Path, ralph_root: Path) -> list[st
 
 
 def validate_workspace_root(workspace_root: Path) -> list[str]:
-    if not workspace_root.exists():
-        return [f'workspace path does not exist: {workspace_root}']
-    if not workspace_root.is_dir():
-        return [f'workspace path is not a directory: {workspace_root}']
-    return []
+    error = workspace_root_error(workspace_root)
+    return [error] if error is not None else []
 
 
 def normalize_input_path(path: str | Path) -> Path:

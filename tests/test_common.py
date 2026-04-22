@@ -425,6 +425,33 @@ FILES: hooks/common.py
         self.assertFalse(parsed['ok'])
         self.assertIn('missing required field(s): CHECKS', parsed['error'])
 
+    def test_parse_ralph_status_rejects_unknown_field(self) -> None:
+        message = """
+---RALPH_STATUS---
+STATUS: progress
+SUMMARY: still working
+FILES: hooks/common.py
+CHECKS: passed:python3 -m unittest
+EXTRA: should_fail
+---END_RALPH_STATUS---
+"""
+        parsed = common.parse_ralph_status(message)
+        self.assertFalse(parsed['ok'])
+        self.assertEqual(parsed['error'], 'unknown EXTRA field in RALPH_STATUS block')
+
+    def test_parse_ralph_status_requires_non_empty_summary(self) -> None:
+        message = """
+---RALPH_STATUS---
+STATUS: progress
+SUMMARY:   
+FILES:
+CHECKS:
+---END_RALPH_STATUS---
+"""
+        parsed = common.parse_ralph_status(message)
+        self.assertFalse(parsed['ok'])
+        self.assertEqual(parsed['error'], 'SUMMARY must be a non-empty single-line summary')
+
     def test_parse_ralph_status_rejects_overlong_summary(self) -> None:
         message = (
             '---RALPH_STATUS---\n'

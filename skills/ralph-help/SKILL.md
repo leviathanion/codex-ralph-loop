@@ -10,7 +10,7 @@ Explain Ralph succinctly, then tailor the rest to the user's question.
 ## Commands
 
 - `$install-ralph` installs Ralph into the current user profile.
-- `$uninstall-ralph` removes Ralph from the current user profile.
+- `$uninstall-ralph` removes Ralph-managed skill links, copied hooks, and Stop-hook registration from the current user profile. It does not disable the shared `codex_hooks` feature flag.
 - `$doctor-ralph` validates Ralph installation and workspace state.
 - `$ralph-loop` starts a workspace-local loop.
 - `$continue-ralph-loop` manually resumes an existing workspace-local loop, including stale `phase="running"` state left behind by a crash or restart.
@@ -54,13 +54,14 @@ Every unfinished Ralph turn must end with exactly one status block as its final 
 ```text
 ---RALPH_STATUS---
 STATUS: progress|no_progress|blocked|complete
-SUMMARY: <single-line summary, 200 chars max>
+SUMMARY: <non-empty single-line summary, 200 chars max>
 FILES: path/a, path/b
 CHECKS: passed:npm test; failed:pytest -q
 ---END_RALPH_STATUS---
 ```
 
 If the status block is missing or malformed, Ralph will stop instead of silently continuing.
+Use exactly those four fields and no extras.
 
 `FILES` is parsed by commas and `CHECKS` is parsed by semicolons, so one item cannot contain those separators literally.
 Do not include the literal status markers inside `SUMMARY`, `FILES`, or `CHECKS`.

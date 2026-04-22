@@ -26,7 +26,7 @@ bash "${AGENTS_HOME:-$HOME/.agents}/skills/continue-ralph-loop/scripts/continue_
 ```text
 ---RALPH_STATUS---
 STATUS: progress|no_progress|blocked|complete
-SUMMARY: <single-line summary, 200 chars max>
+SUMMARY: <non-empty single-line summary, 200 chars max>
 FILES: path/a, path/b
 CHECKS: passed:npm test; failed:pytest -q
 ---END_RALPH_STATUS---
@@ -36,8 +36,9 @@ CHECKS: passed:npm test; failed:pytest -q
    Put the completion token on the final non-whitespace line by itself.
    If you also include a `RALPH_STATUS` block before that token, it must report `STATUS: complete`.
    If an unfinished-turn status block is missing or malformed, Ralph will stop instead of silently continuing.
-7. `FILES` is split on commas and `CHECKS` is split on semicolons. Do not put a literal comma inside one file item or a literal semicolon inside one check item; split or summarize instead.
-8. Do not include the literal status markers inside `SUMMARY`, `FILES`, or `CHECKS`.
+7. Use exactly those four fields and no extras.
+8. `FILES` is split on commas and `CHECKS` is split on semicolons. Do not put a literal comma inside one file item or a literal semicolon inside one check item; split or summarize instead.
+9. Do not include the literal status markers inside `SUMMARY`, `FILES`, or `CHECKS`.
 
 ## Notes
 

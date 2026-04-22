@@ -248,6 +248,48 @@ class InstallAndDoctorTests(unittest.TestCase):
             self.assertFalse((codex_home / 'hooks' / 'ralph' / 'stop_continue.py').exists())
             self.assertFalse((agents_home / 'skills' / 'doctor-ralph').exists())
 
+    def test_uninstall_leaves_shared_codex_hooks_flag_enabled_and_reports_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            env = self.make_env(home)
+
+            install = self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
+            self.assertEqual(install.returncode, 0, install.stderr)
+
+            config_toml = home / '.codex' / 'config.toml'
+            original_config = config_toml.read_text(encoding='utf-8')
+
+            uninstall = self.run_script(UNINSTALL_SCRIPT, cwd=workspace, env=env)
+
+            self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
+            self.assertIn('left shared codex_hooks feature flag unchanged', uninstall.stdout)
+            self.assertEqual(config_toml.read_text(encoding='utf-8'), original_config)
+
+    def test_uninstall_skills_leaves_foreign_skill_symlink_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            env = self.make_env(home)
+            skills_dir = home / '.agents' / 'skills'
+            foreign_skill = home / 'foreign-skill'
+            foreign_skill.mkdir(parents=True, exist_ok=True)
+            target = skills_dir / 'doctor-ralph'
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(foreign_skill)
+
+            uninstall = self.run_script(
+                UNINSTALL_SCRIPT,
+                cwd=workspace,
+                env=env,
+                args=['--skills-only'],
+            )
+
+            self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
+            self.assertTrue(target.is_symlink())
+            self.assertEqual(target.resolve(), foreign_skill.resolve())
+            self.assertIn('left skill link unchanged', uninstall.stdout)
+
     def test_doctor_does_not_mutate_clean_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
             home = Path(tmp_home)
@@ -956,6 +998,57 @@ class InstallAndDoctorTests(unittest.TestCase):
             self.assertIn('left hooks.json unchanged', uninstall.stdout)
             self.assertFalse((home / '.codex' / 'hooks' / 'ralph' / 'stop_continue.py').exists())
             self.assertFalse((home / '.agents' / 'skills' / 'ralph-loop').exists())
+
+    def test_uninstall_rolls_back_when_hook_registry_cannot_be_updated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            env = self.make_env(home)
+            install = self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
+            self.assertEqual(install.returncode, 0, install.stderr)
+
+            hooks_json = home / '.codex' / 'hooks.json'
+            readonly_dir = home / 'readonly-registry'
+            readonly_dir.mkdir(parents=True, exist_ok=True)
+            readonly_target = readonly_dir / 'hooks.json'
+            readonly_target.write_text(hooks_json.read_text(encoding='utf-8'), encoding='utf-8')
+            hooks_json.unlink()
+            os.symlink(readonly_target, hooks_json)
+
+            os.chmod(readonly_dir, 0o500)
+            try:
+                uninstall = self.run_script(UNINSTALL_SCRIPT, cwd=workspace, env=env)
+            finally:
+                os.chmod(readonly_dir, 0o700)
+
+            self.assertNotEqual(uninstall.returncode, 0)
+            self.assertIn('unable to write', uninstall.stderr)
+            self.assertTrue((home / '.agents' / 'skills' / 'ralph-loop').is_symlink())
+            self.assertTrue((home / '.codex' / 'hooks' / 'ralph' / 'stop_continue.py').exists())
+            registry = json.loads(readonly_target.read_text(encoding='utf-8'))
+            self.assertIn('Stop', registry.get('hooks', {}))
+
+    def test_uninstall_rolls_back_when_hook_file_removal_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            env = self.make_env(home)
+            install = self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
+            self.assertEqual(install.returncode, 0, install.stderr)
+
+            target_hooks = home / '.codex' / 'hooks' / 'ralph'
+            os.chmod(target_hooks, 0o500)
+            try:
+                uninstall = self.run_script(UNINSTALL_SCRIPT, cwd=workspace, env=env)
+            finally:
+                os.chmod(target_hooks, 0o700)
+
+            self.assertNotEqual(uninstall.returncode, 0)
+            self.assertIn('Permission denied', uninstall.stderr)
+            self.assertTrue((home / '.agents' / 'skills' / 'ralph-loop').is_symlink())
+            self.assertTrue((home / '.codex' / 'hooks' / 'ralph' / 'stop_continue.py').exists())
+            registry = json.loads((home / '.codex' / 'hooks.json').read_text(encoding='utf-8'))
+            self.assertIn('Stop', registry.get('hooks', {}))
 
     def test_uninstall_hooks_only_fails_closed_on_symlinked_hook_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:

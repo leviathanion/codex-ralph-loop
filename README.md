@@ -45,6 +45,7 @@ This package therefore treats `install-ralph` and `uninstall-ralph` as skills wi
 Runtime behavior is split cleanly:
 
 - `$ralph-loop` starts a loop by writing workspace state.
+- `$ralph-loop` refuses to overwrite an existing active or invalid state file; use `$continue-ralph-loop` to resume or `$cancel-ralph` before starting over.
 - `$continue-ralph-loop` resumes an existing active loop explicitly and can reclaim a stale `phase="running"` state after a crash or restart, even if the prior session never persisted a claim.
 - `$doctor-ralph` validates installation and workspace state.
 - The `Stop` hook keeps unfinished `phase="running"` loops moving until the completion token is emitted on the final non-whitespace line by itself, pauses recoverable stops in-place, and clears state only on completion or the iteration cap.
@@ -64,11 +65,14 @@ That skill tells Codex to run the embedded installer, which:
 - merges the Ralph `Stop` hook into `$CODEX_HOME/hooks.json`
 - ensures `codex_hooks = true` in `$CODEX_HOME/config.toml`
 
-To remove everything Ralph installed:
+To remove Ralph-managed skill links, copied hooks, and Stop-hook registration:
 
 ```text
 $uninstall-ralph
 ```
+
+`$uninstall-ralph` intentionally leaves `codex_hooks` unchanged in `$CODEX_HOME/config.toml`.
+That flag is a profile-wide Codex switch and may be shared with non-Ralph hooks.
 
 ## Bootstrap without the skill
 
@@ -83,8 +87,9 @@ After that, restart Codex and use `$install-ralph` or `$uninstall-ralph`.
 ## Packaging notes
 
 - This package installs the seven skills directly into `$AGENTS_HOME/skills`.
-- The canonical installer logic lives inside the skill-local `scripts/` directories.
+- The skill-local `scripts/` directories are the user-facing entrypoints; profile install/uninstall mutations are implemented in `hooks/profile_installer.py`.
 - Workspace-local Ralph state changes are funneled through packaged scripts so the skills do not hand-write JSON blobs.
+- Install and uninstall are transaction-safe for one caller, but they are not designed to be run concurrently. Do not run multiple `$install-ralph`/`$uninstall-ralph` commands in parallel against the same profile.
 
 ## Runtime files
 
@@ -95,6 +100,7 @@ After that, restart Codex and use `$install-ralph` or `$uninstall-ralph`.
 Recoverable stops keep `.codex/ralph/state.json` in place and set `phase` to `blocked`.
 Use `$continue-ralph-loop` to resume that paused loop explicitly.
 That same command also reclaims a stale running state when Codex crashed or restarted mid-loop, including the window before a session claim was written.
+If you want to abandon the current loop and start fresh, run `$cancel-ralph` before `$ralph-loop`.
 
 A completed Ralph turn must place `<promise>DONE</promise>` on the final non-whitespace line by itself.
 If a completed turn also includes a `RALPH_STATUS` block before that token, it must report `STATUS: complete`.
@@ -104,13 +110,14 @@ Every unfinished Ralph turn must end with exactly one status block as its final 
 ```text
 ---RALPH_STATUS---
 STATUS: progress|no_progress|blocked|complete
-SUMMARY: <single-line summary, 200 chars max>
+SUMMARY: <non-empty single-line summary, 200 chars max>
 FILES: path/a, path/b
 CHECKS: passed:npm test; failed:pytest -q
 ---END_RALPH_STATUS---
 ```
 
 If the block is missing or malformed, Ralph stops instead of silently continuing.
+Use exactly those four fields and no extras.
 
 `FILES` is parsed by splitting on commas and `CHECKS` is parsed by splitting on semicolons.
 Do not put a literal comma inside one `FILES` item or a literal semicolon inside one `CHECKS` item.

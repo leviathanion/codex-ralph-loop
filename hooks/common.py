@@ -9,6 +9,7 @@ from typing import Literal, TypedDict
 
 STATE_RELATIVE_PATH = Path('.codex/ralph/state.json')
 PROGRESS_RELATIVE_PATH = Path('.codex/ralph/progress.jsonl')
+LOCK_RELATIVE_PATH = Path('.codex/ralph/control.lock')
 DEFAULT_MAX_ITERATIONS = 100
 DEFAULT_COMPLETION_TOKEN = '<promise>DONE</promise>'
 SUMMARY_LIMIT = 200
@@ -28,6 +29,7 @@ LEDGER_PROGRESS_STATUSES = ASSISTANT_PROGRESS_STATUSES | {
     'stopped',
 }
 STATUS_BLOCK_REQUIRED_FIELDS = ('STATUS', 'SUMMARY', 'FILES', 'CHECKS')
+STATUS_BLOCK_ALLOWED_FIELDS = frozenset(STATUS_BLOCK_REQUIRED_FIELDS)
 STATUS_START_LINE_PATTERN = re.compile(
     rf'^[ \t]*{re.escape(RALPH_STATUS_START_MARKER)}[ \t]*$',
     re.MULTILINE,
@@ -67,14 +69,27 @@ def workspace_root() -> Path:
     return Path(os.environ.get('PWD') or os.getcwd())
 
 
+def workspace_path(cwd: str | None = None) -> Path:
+    return Path(cwd) if cwd else workspace_root()
+
+
+def workspace_root_error(root: Path) -> str | None:
+    try:
+        if not root.exists():
+            return f'workspace path does not exist: {root}'
+        if not root.is_dir():
+            return f'workspace path is not a directory: {root}'
+    except OSError as exc:
+        return f'unable to access workspace path {root}: {exc}'
+    return None
+
+
 def state_path(cwd: str | None = None) -> Path:
-    root = Path(cwd) if cwd else workspace_root()
-    return root / STATE_RELATIVE_PATH
+    return workspace_path(cwd) / STATE_RELATIVE_PATH
 
 
 def progress_path(cwd: str | None = None) -> Path:
-    root = Path(cwd) if cwd else workspace_root()
-    return root / PROGRESS_RELATIVE_PATH
+    return workspace_path(cwd) / PROGRESS_RELATIVE_PATH
 
 
 def symlink_component_error(root: Path, relative_path: Path) -> str | None:
@@ -231,6 +246,11 @@ def parse_ralph_status(text: str, *, require_final: bool = True) -> RalphStatusP
             }
         key, value = line.split(':', 1)
         normalized_key = key.strip().upper()
+        if normalized_key not in STATUS_BLOCK_ALLOWED_FIELDS:
+            return {
+                'ok': False,
+                'error': f'unknown {normalized_key} field in RALPH_STATUS block',
+            }
         if normalized_key in fields:
             return {
                 'ok': False,
@@ -257,6 +277,11 @@ def parse_ralph_status(text: str, *, require_final: bool = True) -> RalphStatusP
         }
 
     summary = normalize_text(fields.get('SUMMARY', ''))
+    if not summary:
+        return {
+            'ok': False,
+            'error': 'SUMMARY must be a non-empty single-line summary',
+        }
     if len(summary) > SUMMARY_LIMIT:
         return {
             'ok': False,

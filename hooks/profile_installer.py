@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Literal
 
 from common import resolve_atomic_write_target, symlink_component_error
-from hook_registry import build_stop_command, read_hook_registry, register_stop_hook, stop_hook_registered
+from hook_registry import (
+    build_stop_command,
+    read_hook_registry,
+    register_stop_hook,
+    stop_hook_registered,
+    unregister_stop_hook,
+)
 from package_manifest import HOOK_NAMES, SKILL_NAMES, STOP_HOOK_FILE
 from toml_feature_flag import EnsureStatus, ensure_codex_hooks_enabled
 
@@ -102,6 +108,11 @@ class InstallTransaction:
         target = resolve_atomic_write_target(path, preserve_leaf_symlink=preserve_leaf_symlink)
         if target != path:
             self.snapshot_path(target)
+        # Trade-off: when an atomic write follows a profile symlink into a dotfiles tree, the
+        # write helper may need to mkdir the target parent on the far side of that symlink. Track
+        # those directories inside the transaction too so a later failure does not leave "rolled
+        # back" installs with newly created target-side parent directories behind.
+        self.ensure_dir(target.parent)
         return target
 
     def ensure_dir(self, path: Path) -> None:
@@ -148,20 +159,28 @@ class InstallTransaction:
         return False
 
     def _restore_snapshot(self, snapshot: Snapshot) -> None:
-        self._remove_path(snapshot.path)
         if snapshot.kind == 'missing':
+            self._remove_path(snapshot.path)
             return
 
         snapshot.path.parent.mkdir(parents=True, exist_ok=True)
+        if snapshot.kind == 'file':
+            assert snapshot.backup_path is not None
+            if snapshot.path.is_file() and files_match(snapshot.backup_path, snapshot.path):
+                return
+            if snapshot.path.is_symlink() or snapshot.path.is_dir():
+                self._remove_path(snapshot.path)
+            copy_file_atomic(snapshot.backup_path, snapshot.path)
+            return
         if snapshot.kind == 'symlink':
+            if snapshot.path.is_symlink() and os.readlink(snapshot.path) == snapshot.symlink_target:
+                return
+            self._remove_path(snapshot.path)
             assert snapshot.symlink_target is not None
             os.symlink(snapshot.symlink_target, snapshot.path)
             return
-        if snapshot.kind == 'file':
-            assert snapshot.backup_path is not None
-            copy_file_atomic(snapshot.backup_path, snapshot.path)
-            return
 
+        self._remove_path(snapshot.path)
         assert snapshot.backup_path is not None
         shutil.copytree(snapshot.backup_path, snapshot.path, symlinks=True)
 
@@ -240,6 +259,10 @@ def install_profile(
     agents_home: str | Path,
     mode: Mode = 'all',
 ) -> list[str]:
+    # Trade-off: install/uninstall aim for transactional single-caller behavior, not cross-process
+    # coordination. Ralph's runtime loop state needs concurrency control; profile bootstrap does not.
+    # Keep this path simpler and document that users should not run multiple install/uninstall
+    # commands in parallel against the same CODEX_HOME / AGENTS_HOME pair.
     paths = InstallPaths(
         root_dir=normalize_path(root_dir),
         codex_home=normalize_path(codex_home),
@@ -254,6 +277,32 @@ def install_profile(
             ensure_feature_flag(paths, transaction, changes)
         transaction.commit()
     return changes
+
+
+def uninstall_profile(
+    *,
+    root_dir: str | Path,
+    codex_home: str | Path,
+    agents_home: str | Path,
+    mode: Mode = 'all',
+) -> list[str]:
+    paths = InstallPaths(
+        root_dir=normalize_path(root_dir),
+        codex_home=normalize_path(codex_home),
+        agents_home=normalize_path(agents_home),
+    )
+    changes: list[str] = []
+    with InstallTransaction() as transaction:
+        if mode in {'all', 'skills-only'}:
+            uninstall_skills(paths, transaction, changes)
+        if mode in {'all', 'hooks-only'}:
+            uninstall_hooks(paths, transaction, changes)
+        transaction.commit()
+    return changes
+
+
+def skill_link_points_to_source(target: Path, source: Path) -> bool:
+    return normalize_path(target) == normalize_path(source)
 
 
 def install_skills(paths: InstallPaths, transaction: InstallTransaction, changes: list[str]) -> None:
@@ -287,6 +336,21 @@ def install_skills(paths: InstallPaths, transaction: InstallTransaction, changes
         changes.append(f'linked skill {skill_name} -> {target}')
 
 
+def uninstall_skills(paths: InstallPaths, transaction: InstallTransaction, changes: list[str]) -> None:
+    for skill_name in SKILL_NAMES:
+        source = paths.skills_source / skill_name
+        target = paths.user_skills / skill_name
+        if not target.is_symlink():
+            continue
+        if not skill_link_points_to_source(target, source):
+            changes.append(f'left skill link unchanged (unexpected target {target})')
+            continue
+
+        transaction.snapshot_path(target)
+        target.unlink()
+        changes.append(f'removed skill link {target}')
+
+
 def install_hooks(paths: InstallPaths, transaction: InstallTransaction, changes: list[str]) -> None:
     validate_managed_hook_directory(paths)
     transaction.ensure_dir(paths.target_hooks)
@@ -313,6 +377,47 @@ def install_hooks(paths: InstallPaths, transaction: InstallTransaction, changes:
         changes.append('registered Stop hook')
     elif register_status == 'updated':
         changes.append('repaired Stop hook registration')
+
+
+def uninstall_hooks(paths: InstallPaths, transaction: InstallTransaction, changes: list[str]) -> None:
+    try:
+        validate_managed_hook_directory(paths)
+    except ValueError as exc:
+        changes.append(f'left hook files and registration unchanged ({exc})')
+        return
+
+    stop_hook_script = paths.target_hooks / STOP_HOOK_FILE
+    stop_command = build_stop_command(stop_hook_script)
+    hooks_json_error: str | None = None
+
+    if paths.hooks_json.exists() or paths.hooks_json.is_symlink():
+        registry_result = read_hook_registry(paths.hooks_json)
+        if registry_result.status == 'ok':
+            transaction.ensure_dir(paths.hooks_json.parent)
+            transaction.snapshot_atomic_write_path(paths.hooks_json, preserve_leaf_symlink=True)
+            unregister_status = unregister_stop_hook(paths.hooks_json, stop_command)
+            if unregister_status == 'removed':
+                changes.append('removed Stop hook registration')
+        elif registry_result.status != 'missing':
+            details = '; '.join(registry_result.errors) if registry_result.errors else f'failed to read {paths.hooks_json}'
+            # Trade-off: if hooks.json is already invalid, uninstall should still remove Ralph's
+            # local hook files instead of rewriting a malformed profile-wide registry. A readable
+            # but unwritable registry still raises before any file deletion because that can leave
+            # a live Stop-hook registration pointing at a missing script.
+            hooks_json_error = details
+
+    for hook_name in HOOK_NAMES:
+        target = paths.target_hooks / hook_name
+        if not (target.is_file() or target.is_symlink()):
+            continue
+        transaction.snapshot_path(target)
+        target.unlink()
+        changes.append(f'removed hook file {target}')
+
+    if hooks_json_error is not None:
+        changes.append(f'left hooks.json unchanged ({hooks_json_error})')
+
+    changes.append('left shared codex_hooks feature flag unchanged (profile-wide Codex setting)')
 
 
 def ensure_feature_flag(paths: InstallPaths, transaction: InstallTransaction, changes: list[str]) -> None:
@@ -350,6 +455,16 @@ def build_parser() -> argparse.ArgumentParser:
         choices=('all', 'skills-only', 'hooks-only'),
         default='all',
     )
+
+    uninstall_parser = subparsers.add_parser('uninstall')
+    uninstall_parser.add_argument('--root-dir', required=True)
+    uninstall_parser.add_argument('--codex-home', required=True)
+    uninstall_parser.add_argument('--agents-home', required=True)
+    uninstall_parser.add_argument(
+        '--mode',
+        choices=('all', 'skills-only', 'hooks-only'),
+        default='all',
+    )
     return parser
 
 
@@ -358,21 +473,35 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        changes = install_profile(
-            root_dir=args.root_dir,
-            codex_home=args.codex_home,
-            agents_home=args.agents_home,
-            mode=args.mode,
-        )
+        if args.command == 'install':
+            changes = install_profile(
+                root_dir=args.root_dir,
+                codex_home=args.codex_home,
+                agents_home=args.agents_home,
+                mode=args.mode,
+            )
+        else:
+            changes = uninstall_profile(
+                root_dir=args.root_dir,
+                codex_home=args.codex_home,
+                agents_home=args.agents_home,
+                mode=args.mode,
+            )
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
     if not changes:
-        print('Codex Ralph is already installed.')
+        if args.command == 'install':
+            print('Codex Ralph is already installed.')
+        else:
+            print('Nothing to uninstall.')
         return 0
 
-    print('Installed Codex Ralph:')
+    if args.command == 'install':
+        print('Installed Codex Ralph:')
+    else:
+        print('Uninstalled Codex Ralph:')
     for change in changes:
         print(f'- {change}')
     return 0

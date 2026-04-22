@@ -237,6 +237,41 @@ class ProfileInstallerTests(unittest.TestCase):
             self.assertEqual(config_target.read_text(encoding='utf-8'), config_target_original)
             self.assertFalse((codex_home / 'hooks' / 'ralph' / 'stop_continue.py').exists())
 
+    def test_install_profile_rolls_back_created_symlink_target_parent_dirs_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home:
+            home = Path(tmp_home)
+            codex_home = home / '.codex'
+            agents_home = home / '.agents'
+            dotfiles = home / 'dotfiles'
+            dotfiles.mkdir(parents=True, exist_ok=True)
+
+            hooks_target = dotfiles / 'nested' / 'hooks.json'
+            hooks_json = codex_home / 'hooks.json'
+            hooks_json.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(hooks_target, hooks_json)
+
+            config_target = dotfiles / 'config.toml'
+            config_target.write_text('[features]\ncodex_hooks = false\n', encoding='utf-8')
+            config_toml = codex_home / 'config.toml'
+            os.symlink(config_target, config_toml)
+
+            self.assertFalse(hooks_target.parent.exists())
+
+            with mock.patch.object(profile_installer, 'record_feature_flag_change', side_effect=OSError('boom')):
+                with self.assertRaisesRegex(OSError, 'boom'):
+                    profile_installer.install_profile(
+                        root_dir=REPO_ROOT,
+                        codex_home=codex_home,
+                        agents_home=agents_home,
+                        mode='hooks-only',
+                    )
+
+            self.assertFalse(hooks_target.exists())
+            self.assertFalse(hooks_target.parent.exists())
+            self.assertTrue(hooks_json.is_symlink())
+            self.assertEqual(config_target.read_text(encoding='utf-8'), '[features]\ncodex_hooks = false\n')
+            self.assertFalse((codex_home / 'hooks' / 'ralph' / 'stop_continue.py').exists())
+
 
 class ShellPortabilityTests(unittest.TestCase):
     def test_shell_scripts_parse_with_bash_n(self) -> None:

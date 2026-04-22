@@ -68,12 +68,12 @@ class LoopControlTests(unittest.TestCase):
             workspace = Path(tmpdir)
             original_state = state_store.default_state()
             original_state.update({
-                'active': True,
-                'prompt': 'Finish the blocked task',
+                'active': False,
+                'prompt': 'Finished task kept for rollback coverage',
                 'iteration': 4,
                 'max_iterations': 6,
                 'completion_token': '<promise>DONE</promise>',
-                'claimed_session_id': 'session-a',
+                'claimed_session_id': None,
                 'phase': 'blocked',
                 'started_at': common.now_iso(),
                 'updated_at': common.now_iso(),
@@ -96,6 +96,87 @@ class LoopControlTests(unittest.TestCase):
             restored_state = state_store.read_state(str(workspace))
             self.assertEqual(restored_state.status, 'ok')
             self.assertEqual(restored_state.value, original_state)
+
+    def test_start_loop_rejects_existing_active_loop_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            original_state = state_store.default_state()
+            original_state.update({
+                'active': True,
+                'prompt': 'Finish the blocked task',
+                'iteration': 4,
+                'max_iterations': 6,
+                'completion_token': '<promise>DONE</promise>',
+                'claimed_session_id': 'session-a',
+                'phase': 'blocked',
+                'started_at': common.now_iso(),
+                'updated_at': common.now_iso(),
+                'last_message_fingerprint': 'sha256:stale',
+                'repeat_count': 3,
+            })
+            state_store.save_state(original_state, str(workspace))
+
+            with self.assertRaisesRegex(ValueError, 'An active Ralph loop already exists'):
+                loop_control.start_loop(
+                    cwd=str(workspace),
+                    prompt='Ship the feature',
+                    max_iterations=3,
+                    completion_token='<promise>DONE</promise>',
+                )
+
+            restored_state = state_store.read_state(str(workspace))
+            self.assertEqual(restored_state.status, 'ok')
+            self.assertEqual(restored_state.value, original_state)
+            self.assertFalse(common.progress_path(str(workspace)).exists())
+
+    def test_start_loop_rejects_invalid_existing_state_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_file = common.state_path(str(workspace))
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            original = '{invalid\n'
+            state_file.write_text(original, encoding='utf-8')
+
+            with self.assertRaisesRegex(ValueError, 'Ralph state is invalid JSON'):
+                loop_control.start_loop(
+                    cwd=str(workspace),
+                    prompt='Ship the feature',
+                    max_iterations=3,
+                    completion_token='<promise>DONE</promise>',
+                )
+
+            self.assertEqual(state_file.read_text(encoding='utf-8'), original)
+            self.assertFalse(common.progress_path(str(workspace)).exists())
+
+    def test_start_loop_rejects_missing_workspace_without_creating_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / 'missing-workspace'
+
+            with self.assertRaisesRegex(state_store.StorageError, 'workspace path does not exist'):
+                loop_control.start_loop(
+                    cwd=str(workspace),
+                    prompt='Ship the feature',
+                    max_iterations=3,
+                    completion_token='<promise>DONE</promise>',
+                )
+
+            self.assertFalse(workspace.exists())
+
+    def test_start_loop_rejects_blank_prompt_without_creating_lock_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+
+            with self.assertRaisesRegex(ValueError, 'prompt must not be empty'):
+                loop_control.start_loop(
+                    cwd=str(workspace),
+                    prompt='   ',
+                    max_iterations=3,
+                    completion_token='<promise>DONE</promise>',
+                )
+
+            self.assertFalse((workspace / common.LOCK_RELATIVE_PATH).exists())
+            self.assertFalse(common.state_path(str(workspace)).exists())
+            self.assertFalse(common.progress_path(str(workspace)).exists())
 
     def test_resume_loop_reclaims_unclaimed_running_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -133,6 +214,34 @@ class LoopControlTests(unittest.TestCase):
             ]
             self.assertEqual(entries[-1]['status'], 'resumed')
             self.assertEqual(entries[-1]['reason'], 'orphaned_running_state')
+
+    def test_resume_loop_missing_state_is_noop_without_creating_lock_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+
+            result = loop_control.resume_loop(cwd=str(workspace))
+
+            self.assertEqual(result, {
+                'status': 'missing',
+                'message': 'No active Ralph loop state exists in this workspace.',
+            })
+            self.assertFalse((workspace / common.LOCK_RELATIVE_PATH).exists())
+            self.assertFalse((workspace / '.codex').exists())
+
+    def test_resume_loop_missing_state_succeeds_in_read_only_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            os.chmod(workspace, 0o500)
+            try:
+                result = loop_control.resume_loop(cwd=str(workspace))
+            finally:
+                os.chmod(workspace, 0o700)
+
+            self.assertEqual(result, {
+                'status': 'missing',
+                'message': 'No active Ralph loop state exists in this workspace.',
+            })
+            self.assertFalse((workspace / '.codex').exists())
 
     def test_resume_loop_reclaims_running_session_claim(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -277,6 +386,34 @@ class LoopControlTests(unittest.TestCase):
             self.assertFalse(state_file.exists())
             self.assertFalse(common.progress_path(str(workspace)).exists())
 
+    def test_cancel_loop_missing_state_is_noop_without_creating_lock_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+
+            result = loop_control.cancel_loop(cwd=str(workspace))
+
+            self.assertEqual(result, {
+                'status': 'missing',
+                'message': 'No Ralph loop state was present.',
+            })
+            self.assertFalse((workspace / common.LOCK_RELATIVE_PATH).exists())
+            self.assertFalse((workspace / '.codex').exists())
+
+    def test_cancel_loop_missing_state_succeeds_in_read_only_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            os.chmod(workspace, 0o500)
+            try:
+                result = loop_control.cancel_loop(cwd=str(workspace))
+            finally:
+                os.chmod(workspace, 0o700)
+
+            self.assertEqual(result, {
+                'status': 'missing',
+                'message': 'No Ralph loop state was present.',
+            })
+            self.assertFalse((workspace / '.codex').exists())
+
     def test_cancel_loop_clears_dangling_state_symlink_without_progress_entry(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
@@ -290,6 +427,17 @@ class LoopControlTests(unittest.TestCase):
             self.assertFalse(state_file.exists())
             self.assertFalse(state_file.is_symlink())
             self.assertFalse(common.progress_path(str(workspace)).exists())
+
+    def test_cancel_loop_rejects_non_directory_workspace_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / 'workspace-file'
+            workspace.write_text('not a directory', encoding='utf-8')
+
+            with self.assertRaisesRegex(state_store.StorageError, 'workspace path is not a directory'):
+                loop_control.cancel_loop(cwd=str(workspace))
+
+            self.assertEqual(workspace.read_text(encoding='utf-8'), 'not a directory')
+            self.assertFalse((workspace / '.codex').exists())
 
 
 if __name__ == '__main__':
