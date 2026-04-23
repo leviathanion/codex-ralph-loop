@@ -873,6 +873,96 @@ class InstallAndDoctorTests(unittest.TestCase):
             self.assertEqual(doctor.returncode, 0, doctor.stderr)
             self.assertIn('[OK] Hook Registry:', doctor.stdout)
 
+    def test_start_script_rejects_workspace_override_but_allows_safe_loop_options(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            env = self.make_env(home)
+            self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
+
+            rejected = self.run_script(
+                START_SCRIPT,
+                cwd=workspace,
+                env=env,
+                args=['--cwd', str(REPO_ROOT)],
+                input_text='Ship the feature\n',
+            )
+
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn('always uses the current workspace', rejected.stderr)
+            self.assertFalse((workspace / '.codex').exists())
+
+            started = self.run_script(
+                START_SCRIPT,
+                cwd=workspace,
+                env=env,
+                args=['--max-iterations', '3', '--completion-token', '<done/>'],
+                input_text='Ship the feature\n',
+            )
+
+            self.assertEqual(started.returncode, 0, started.stderr)
+            payload = json.loads(started.stdout)
+            self.assertEqual(payload['status'], 'started')
+            self.assertEqual(payload['max_iterations'], 3)
+            self.assertEqual(payload['completion_token'], '<done/>')
+
+    def test_continue_script_rejects_workspace_override_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_root:
+            home = Path(tmp_home)
+            root = Path(tmp_root)
+            workspace_a = root / 'workspace-a'
+            workspace_b = root / 'workspace-b'
+            workspace_a.mkdir()
+            workspace_b.mkdir()
+            env = self.make_env(home)
+            self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
+
+            started = self.run_script(START_SCRIPT, cwd=workspace_a, env=env, input_text='Ship the feature\n')
+            self.assertEqual(started.returncode, 0, started.stderr)
+
+            rejected = self.run_script(
+                CONTINUE_SCRIPT,
+                cwd=workspace_b,
+                env=env,
+                args=['--cwd', str(workspace_a)],
+            )
+
+            self.assertEqual(rejected.returncode, 2)
+            self.assertEqual(rejected.stderr.strip(), 'usage: continue_ralph.sh')
+            self.assertFalse((workspace_b / '.codex').exists())
+
+            state_path = workspace_a / '.codex' / 'ralph' / 'state.json'
+            state = json.loads(state_path.read_text(encoding='utf-8'))
+            self.assertTrue(state['active'])
+            self.assertEqual(state['phase'], 'running')
+            self.assertEqual(state['iteration'], 0)
+
+    def test_cancel_script_rejects_workspace_override_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_root:
+            home = Path(tmp_home)
+            root = Path(tmp_root)
+            workspace_a = root / 'workspace-a'
+            workspace_b = root / 'workspace-b'
+            workspace_a.mkdir()
+            workspace_b.mkdir()
+            env = self.make_env(home)
+            self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
+
+            started = self.run_script(START_SCRIPT, cwd=workspace_a, env=env, input_text='Ship the feature\n')
+            self.assertEqual(started.returncode, 0, started.stderr)
+
+            rejected = self.run_script(
+                CANCEL_SCRIPT,
+                cwd=workspace_b,
+                env=env,
+                args=['--cwd', str(workspace_a)],
+            )
+
+            self.assertEqual(rejected.returncode, 2)
+            self.assertEqual(rejected.stderr.strip(), 'usage: cancel_ralph.sh')
+            self.assertFalse((workspace_b / '.codex').exists())
+            self.assertTrue((workspace_a / '.codex' / 'ralph' / 'state.json').exists())
+
     def test_cancel_script_clears_dangling_state_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
             home = Path(tmp_home)
