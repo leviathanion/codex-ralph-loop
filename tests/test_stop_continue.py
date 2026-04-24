@@ -1129,6 +1129,36 @@ class StopContinueHookTests(unittest.TestCase):
             self.assertIn('iteration must be an integer', response['systemMessage'])
             self.assertEqual(self.read_progress(workspace), [])
 
+    def test_empty_claimed_session_id_returns_error_without_silent_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_file = common.state_path(str(workspace))
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(json.dumps({
+                'active': True,
+                'prompt': 'Ship the feature',
+                'iteration': 1,
+                'max_iterations': 3,
+                'completion_token': '<promise>DONE</promise>',
+                'claimed_session_id': '',
+                'phase': 'running',
+                'started_at': common.now_iso(),
+                'updated_at': common.now_iso(),
+                'last_message_fingerprint': None,
+                'repeat_count': 0,
+            }) + '\n', encoding='utf-8')
+
+            result = self.run_hook(workspace, {
+                'cwd': str(workspace),
+                'session_id': 'session-1',
+                'last_assistant_message': 'ignored',
+            })
+
+            response = json.loads(result.stdout)
+            self.assertIn('Ralph state is invalid.', response['systemMessage'])
+            self.assertIn('claimed_session_id must be a non-empty string or null', response['systemMessage'])
+            self.assertEqual(self.read_progress(workspace), [])
+
     def test_invalid_phase_schema_returns_error_without_silent_noop(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)

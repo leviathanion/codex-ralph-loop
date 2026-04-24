@@ -188,8 +188,11 @@ def validate_state_payload(data: Any) -> list[str]:
         errors.append('completion_token must be a single-line string without leading or trailing whitespace')
 
     claimed_session_id = data.get('claimed_session_id')
-    if claimed_session_id is not None and not isinstance(claimed_session_id, str):
-        errors.append('claimed_session_id must be a string or null')
+    if claimed_session_id is not None and (not isinstance(claimed_session_id, str) or not claimed_session_id):
+        # Trade-off: reject empty persisted claims even though they are strings. Stop-hook payload
+        # validation requires a non-empty session_id, so an empty claim can never match a live
+        # session and would otherwise make an active running loop silently ignore every Stop hook.
+        errors.append('claimed_session_id must be a non-empty string or null')
 
     phase = data.get('phase')
     if not isinstance(phase, str) or phase not in ALLOWED_PHASES:
@@ -304,8 +307,8 @@ def validate_progress_entry(data: Any) -> list[str]:
         errors.append('iteration must be >= 0')
 
     session_id = data.get('session_id')
-    if session_id is not None and not isinstance(session_id, str):
-        errors.append('session_id must be a string or null')
+    if session_id is not None and (not isinstance(session_id, str) or not session_id):
+        errors.append('session_id must be a non-empty string or null')
 
     status = data.get('status')
     if not isinstance(status, str) or status not in LEDGER_PROGRESS_STATUSES:

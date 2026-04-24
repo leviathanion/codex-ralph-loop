@@ -54,6 +54,26 @@ class CommonModuleTests(unittest.TestCase):
             self.assertIn('prompt must be a string', result.errors)
             self.assertIn('iteration must be an integer', result.errors)
 
+    def test_read_state_rejects_empty_claimed_session_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_file = workspace / '.codex' / 'ralph' / 'state.json'
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state = state_store.default_state()
+            state.update({
+                'active': True,
+                'prompt': 'Ship the feature',
+                'claimed_session_id': '',
+                'started_at': common.now_iso(),
+                'updated_at': common.now_iso(),
+            })
+            state_file.write_text(json.dumps(state) + '\n', encoding='utf-8')
+
+            result = state_store.read_state(str(workspace))
+
+            self.assertEqual(result.status, 'invalid_schema')
+            self.assertIn('claimed_session_id must be a non-empty string or null', result.errors)
+
     def test_save_state_round_trips_complete_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
@@ -672,6 +692,23 @@ CHECKS:
         errors = state_store.validate_progress_entry(entry)
 
         self.assertTrue(any(error.startswith('status must be one of') for error in errors))
+
+    def test_validate_progress_entry_rejects_empty_session_id(self) -> None:
+        entry = {
+            'ts': common.now_iso(),
+            'iteration': 0,
+            'session_id': '',
+            'status': 'progress',
+            'summary': 'continued work',
+            'files': [],
+            'checks': [],
+            'message_fingerprint': None,
+            'reason': None,
+        }
+
+        errors = state_store.validate_progress_entry(entry)
+
+        self.assertIn('session_id must be a non-empty string or null', errors)
 
 
 if __name__ == '__main__':
