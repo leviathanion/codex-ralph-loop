@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOKS_DIR = REPO_ROOT / 'hooks'
@@ -45,6 +46,23 @@ class LoopControlTests(unittest.TestCase):
             self.assertEqual(len(entries), 1)
             self.assertEqual(entries[0]['status'], 'started')
             self.assertEqual(entries[0]['summary'], 'Ralph loop started')
+
+    def test_start_loop_succeeds_when_directory_fsync_fails_after_replace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+
+            with mock.patch.object(common, 'fsync_directory', side_effect=OSError('boom')):
+                result = loop_control.start_loop(
+                    cwd=str(workspace),
+                    prompt='Ship the feature',
+                    max_iterations=5,
+                    completion_token='<promise>DONE</promise>',
+                )
+
+            self.assertEqual(result['status'], 'started')
+            state_result = state_store.read_state(str(workspace))
+            self.assertEqual(state_result.status, 'ok')
+            self.assertTrue(common.progress_path(str(workspace)).exists())
 
     def test_start_loop_rolls_back_state_when_progress_append_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

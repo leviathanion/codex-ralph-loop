@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOKS_DIR = REPO_ROOT / 'hooks'
@@ -69,6 +70,33 @@ class CommonModuleTests(unittest.TestCase):
 
             self.assertEqual(loaded.status, 'ok')
             self.assertEqual(loaded.value, state)
+
+    def test_save_state_fsyncs_parent_directory_after_replace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state = state_store.default_state()
+            state.update({
+                'active': True,
+                'prompt': 'finish the task',
+                'started_at': common.now_iso(),
+                'updated_at': common.now_iso(),
+            })
+
+            with mock.patch.object(state_store.os, 'fsync', wraps=state_store.os.fsync) as fsync_mock:
+                state_store.save_state(state, str(workspace))
+
+            self.assertEqual(state_store.read_state(str(workspace)).value, state)
+            self.assertGreaterEqual(fsync_mock.call_count, 2)
+
+    def test_atomic_write_text_treats_post_replace_directory_fsync_failure_as_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / 'sample.txt'
+            path.write_text('old\n', encoding='utf-8')
+
+            with mock.patch.object(common, 'fsync_directory', side_effect=OSError('boom')):
+                common.atomic_write_text(path, 'new\n')
+
+            self.assertEqual(path.read_text(encoding='utf-8'), 'new\n')
 
     def test_save_state_rejects_live_symlinked_storage_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -291,6 +319,40 @@ CHECKS: passed:first; failed:second
         self.assertEqual(parsed['files'], ['a.py', 'b.py'])
         self.assertEqual(parsed['checks'], ['passed:first', 'failed:second'])
 
+    def test_parse_ralph_status_rejects_trailing_fenced_code_after_status_block(self) -> None:
+        message = (
+            '---RALPH_STATUS---\n'
+            'STATUS: progress\n'
+            'SUMMARY: still working\n'
+            'FILES:\n'
+            'CHECKS:\n'
+            '---END_RALPH_STATUS---\n'
+            '```text\n'
+            'extra trailing content\n'
+            '```\n'
+        )
+
+        parsed = common.parse_ralph_status(message)
+
+        self.assertFalse(parsed['ok'])
+        self.assertIn('final non-whitespace content', parsed['error'])
+
+    def test_parse_ralph_status_rejects_trailing_indented_code_after_status_block(self) -> None:
+        message = (
+            '---RALPH_STATUS---\n'
+            'STATUS: progress\n'
+            'SUMMARY: still working\n'
+            'FILES:\n'
+            'CHECKS:\n'
+            '---END_RALPH_STATUS---\n'
+            '    extra trailing content\n'
+        )
+
+        parsed = common.parse_ralph_status(message)
+
+        self.assertFalse(parsed['ok'])
+        self.assertIn('final non-whitespace content', parsed['error'])
+
     def test_completion_token_must_be_final_line_by_itself(self) -> None:
         token = common.DEFAULT_COMPLETION_TOKEN
 
@@ -321,6 +383,47 @@ CHECKS:
         self.assertFalse(parsed['ok'])
         self.assertEqual(parsed['error'], 'missing RALPH_STATUS block')
         self.assertFalse(common.contains_ralph_status_markup(message))
+
+    def test_contains_ralph_status_markup_ignores_fenced_example_block(self) -> None:
+        message = (
+            'Document the required format for future contributors.\n'
+            '```text\n'
+            '---RALPH_STATUS---\n'
+            'STATUS: progress\n'
+            'SUMMARY: example only\n'
+            'FILES:\n'
+            'CHECKS:\n'
+            '---END_RALPH_STATUS---\n'
+            '```\n'
+        )
+
+        self.assertFalse(common.contains_ralph_status_markup(message))
+
+    def test_contains_ralph_status_markup_ignores_indented_example_block(self) -> None:
+        message = (
+            'Document the required format for future contributors.\n'
+            '    ---RALPH_STATUS---\n'
+            '    STATUS: progress\n'
+            '    SUMMARY: example only\n'
+            '    FILES:\n'
+            '    CHECKS:\n'
+            '    ---END_RALPH_STATUS---\n'
+        )
+
+        self.assertFalse(common.contains_ralph_status_markup(message))
+
+    def test_contains_ralph_status_markup_detects_unclosed_fenced_block(self) -> None:
+        message = (
+            '```text\n'
+            '---RALPH_STATUS---\n'
+            'STATUS: progress\n'
+            'SUMMARY: example only\n'
+            'FILES:\n'
+            'CHECKS:\n'
+            '---END_RALPH_STATUS---\n'
+        )
+
+        self.assertTrue(common.contains_ralph_status_markup(message))
 
     def test_parse_trailing_ralph_status_ignores_quoted_example_block(self) -> None:
         message = (
@@ -366,6 +469,41 @@ CHECKS:
         self.assertTrue(parsed['ok'])
         self.assertEqual(parsed['status'], 'complete')
         self.assertEqual(parsed['files'], ['hooks/common.py'])
+
+    def test_parse_trailing_ralph_status_ignores_indented_example_block(self) -> None:
+        message = (
+            'Document the required format for future contributors.\n'
+            '    ---RALPH_STATUS---\n'
+            '    STATUS: progress\n'
+            '    SUMMARY: example only\n'
+            '    FILES:\n'
+            '    CHECKS:\n'
+            '    ---END_RALPH_STATUS---\n'
+        )
+
+        parsed, attempted = common.parse_trailing_ralph_status(message)
+
+        self.assertFalse(attempted)
+        self.assertFalse(parsed['ok'])
+        self.assertEqual(parsed['error'], 'missing RALPH_STATUS block')
+
+    def test_parse_ralph_status_ignores_list_indented_fenced_example_block(self) -> None:
+        message = (
+            '- Example for documentation:\n'
+            '    ```text\n'
+            '    ---RALPH_STATUS---\n'
+            '    STATUS: progress\n'
+            '    SUMMARY: example only\n'
+            '    FILES:\n'
+            '    CHECKS:\n'
+            '    ---END_RALPH_STATUS---\n'
+            '    ```\n'
+        )
+
+        parsed = common.parse_ralph_status(message)
+
+        self.assertFalse(parsed['ok'])
+        self.assertEqual(parsed['error'], 'missing RALPH_STATUS block')
 
     def test_parse_ralph_status_rejects_multiple_blocks(self) -> None:
         message = """

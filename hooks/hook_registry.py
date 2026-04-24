@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shlex
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
-from common import resolve_atomic_write_target
+from common import atomic_write_text
 
 class HookDefinition(TypedDict, total=False):
     type: str
@@ -149,25 +147,8 @@ def write_hook_registry(path: Path, registry: HookRegistry) -> None:
         raise ValueError('; '.join(errors))
 
     try:
-        target = resolve_atomic_write_target(path, preserve_leaf_symlink=True)
-        target.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(registry, indent=2, ensure_ascii=True) + '\n'
-        fd, tmp_name = tempfile.mkstemp(
-            dir=str(target.parent),
-            prefix=f'.{target.name}.',
-            suffix='.tmp',
-            text=True,
-        )
-        tmp_path = Path(tmp_name)
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp_path, target)
-        finally:
-            if tmp_path.exists():
-                tmp_path.unlink()
+        atomic_write_text(path, payload, preserve_leaf_symlink=True)
     except OSError as exc:
         raise ValueError(f'unable to write {path}: {exc}') from exc
 

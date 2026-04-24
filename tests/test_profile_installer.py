@@ -25,7 +25,7 @@ BANNED_CONSTRUCTS = (
 
 
 class ProfileInstallerTests(unittest.TestCase):
-    def test_copy_file_atomic_fsyncs_temp_file_before_replace(self) -> None:
+    def test_copy_file_atomic_fsyncs_temp_file_and_parent_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             source = root / 'source.txt'
@@ -36,7 +36,7 @@ class ProfileInstallerTests(unittest.TestCase):
                 profile_installer.copy_file_atomic(source, destination)
 
             self.assertEqual(destination.read_text(encoding='utf-8'), 'payload\n')
-            self.assertGreaterEqual(fsync_mock.call_count, 1)
+            self.assertGreaterEqual(fsync_mock.call_count, 2)
 
     def test_install_profile_rolls_back_files_symlinks_and_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home:

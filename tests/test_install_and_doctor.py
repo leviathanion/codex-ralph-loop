@@ -248,6 +248,45 @@ class InstallAndDoctorTests(unittest.TestCase):
             self.assertFalse((codex_home / 'hooks' / 'ralph' / 'stop_continue.py').exists())
             self.assertFalse((agents_home / 'skills' / 'doctor-ralph').exists())
 
+    def test_install_doctor_and_uninstall_share_home_anchored_relative_profile_overrides(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp_home,
+            tempfile.TemporaryDirectory() as tmp_workspace,
+            tempfile.TemporaryDirectory() as tmp_install_cwd,
+        ):
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            install_cwd = Path(tmp_install_cwd)
+            env = self.make_env(home)
+            env['CODEX_HOME'] = '.codex-relative'
+            env['AGENTS_HOME'] = '.agents-relative'
+
+            install = self.run_script(INSTALL_SCRIPT, cwd=install_cwd, env=env)
+
+            self.assertEqual(install.returncode, 0, install.stderr)
+            codex_home = home / '.codex-relative'
+            agents_home = home / '.agents-relative'
+            self.assertTrue((codex_home / 'hooks' / 'ralph' / 'stop_continue.py').exists())
+            self.assertTrue((agents_home / 'skills' / 'doctor-ralph').is_symlink())
+            self.assertFalse((install_cwd / '.codex-relative').exists())
+            self.assertFalse((install_cwd / '.agents-relative').exists())
+
+            doctor = self.run_script(DOCTOR_SCRIPT, cwd=workspace, env=env)
+
+            self.assertEqual(doctor.returncode, 0, doctor.stdout)
+            self.assertIn('[OK] Hooks:', doctor.stdout)
+            self.assertIn('[OK] Skills:', doctor.stdout)
+
+            uninstall = self.run_script(UNINSTALL_SCRIPT, cwd=workspace, env=env)
+
+            self.assertEqual(uninstall.returncode, 0, uninstall.stdout)
+            self.assertIn('removed hook file', uninstall.stdout)
+            self.assertIn('removed skill link', uninstall.stdout)
+            self.assertFalse((codex_home / 'hooks' / 'ralph' / 'stop_continue.py').exists())
+            self.assertFalse((agents_home / 'skills' / 'doctor-ralph').exists())
+            self.assertFalse((workspace / '.codex-relative').exists())
+            self.assertFalse((workspace / '.agents-relative').exists())
+
     def test_uninstall_leaves_shared_codex_hooks_flag_enabled_and_reports_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
             home = Path(tmp_home)
@@ -1088,6 +1127,28 @@ class InstallAndDoctorTests(unittest.TestCase):
             self.assertIn('left hooks.json unchanged', uninstall.stdout)
             self.assertFalse((home / '.codex' / 'hooks' / 'ralph' / 'stop_continue.py').exists())
             self.assertFalse((home / '.agents' / 'skills' / 'ralph-loop').exists())
+
+    def test_uninstall_fails_closed_when_hook_registry_cannot_be_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            env = self.make_env(home)
+            install = self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
+            self.assertEqual(install.returncode, 0, install.stderr)
+
+            hooks_json = home / '.codex' / 'hooks.json'
+            original_registry = json.loads(hooks_json.read_text(encoding='utf-8'))
+            os.chmod(hooks_json, 0)
+            try:
+                uninstall = self.run_script(UNINSTALL_SCRIPT, cwd=workspace, env=env)
+            finally:
+                os.chmod(hooks_json, 0o600)
+
+            self.assertNotEqual(uninstall.returncode, 0)
+            self.assertIn('unable to verify Ralph Stop hook registration', uninstall.stderr)
+            self.assertTrue((home / '.agents' / 'skills' / 'ralph-loop').is_symlink())
+            self.assertTrue((home / '.codex' / 'hooks' / 'ralph' / 'stop_continue.py').exists())
+            self.assertEqual(json.loads(hooks_json.read_text(encoding='utf-8')), original_registry)
 
     def test_uninstall_rolls_back_when_hook_registry_cannot_be_updated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:

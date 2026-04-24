@@ -8,6 +8,7 @@ from common import (
     ParsedRalphStatus,
     ProgressDetails,
     completion_token_emitted,
+    contains_ralph_status_markup,
     fingerprint_message,
     now_iso,
     parse_ralph_status,
@@ -177,7 +178,7 @@ def pause_loop(state: LoopState, cwd: str | None) -> None:
     save_state(state, cwd)
 
 
-def validated_payload(payload: Any) -> tuple[str, str | None, str] | None:
+def validated_payload(payload: Any) -> tuple[str, str, str] | None:
     if not isinstance(payload, dict):
         emit_stop(invalid_payload_message('payload must be a JSON object'))
         return None
@@ -188,8 +189,12 @@ def validated_payload(payload: Any) -> tuple[str, str | None, str] | None:
         return None
 
     session_id = payload.get('session_id')
-    if session_id is not None and (not isinstance(session_id, str) or not session_id):
-        emit_stop(invalid_payload_message('session_id must be a non-empty string when present'))
+    # Trade-off: older Stop-hook payloads could omit session_id, but Ralph cannot safely
+    # distinguish a retry from a stale or concurrent invocation without a stable session claim.
+    # Fail closed here instead of guessing and risking duplicate iteration advances or silently
+    # ignoring the live session after a claim has already been recorded.
+    if not isinstance(session_id, str) or not session_id:
+        emit_stop(invalid_payload_message('session_id must be a non-empty string'))
         return None
 
     last_assistant_message = payload.get('last_assistant_message')
@@ -208,7 +213,7 @@ def process_stop_state(
     *,
     state: LoopState,
     cwd: str,
-    session_id: str | None,
+    session_id: str,
     last_assistant_message: str,
 ) -> int:
     if not state['active']:
@@ -222,7 +227,7 @@ def process_stop_state(
         return 0
 
     claimed_state = dict(state)
-    if not claimed_session_id and session_id:
+    if claimed_session_id is None:
         claimed_state['claimed_session_id'] = session_id
 
     parsed_status = parse_ralph_status(last_assistant_message)
@@ -266,6 +271,29 @@ def process_stop_state(
                     f'RALPH_STATUS block was malformed. Details: {completion_status["error"]}. '
                     'Either remove the status block entirely or fix it so it reports STATUS=complete, '
                     f'then resume with $continue-ralph-loop. {token} must remain on the final non-whitespace line by itself.'
+                ),
+            )
+        if not attempted_status_block and contains_ralph_status_markup(completion_body):
+            malformed_status = parse_ralph_status(completion_body)
+            status_error = (
+                malformed_status['error']
+                if not malformed_status['ok']
+                else 'RALPH_STATUS block must be the final non-whitespace content before the completion token'
+            )
+            return pause_loop_with_reason(
+                state=claimed_state,
+                cwd=cwd,
+                iteration=iteration,
+                session_id=session_id,
+                message_fingerprint=message_fingerprint,
+                details=fallback_details,
+                reason='invalid_status_block',
+                message=(
+                    'Ralph paused because the assistant emitted the completion token but left '
+                    f'non-terminal RALPH_STATUS markup earlier in the message. Details: {status_error}. '
+                    'Either remove the status block entirely or move it immediately before the completion token '
+                    f'and make it report STATUS=complete, then resume with $continue-ralph-loop. {token} must '
+                    'remain on the final non-whitespace line by itself.'
                 ),
             )
         details = progress_details_from_status(completion_status) if completion_status['ok'] else fallback_details

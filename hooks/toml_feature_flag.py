@@ -3,12 +3,11 @@ from __future__ import annotations
 import os
 import re
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
-from common import resolve_atomic_write_target
+from common import atomic_write_text
 
 try:
     import tomllib
@@ -33,24 +32,7 @@ def render_toml_lines(lines: list[str]) -> str:
 
 
 def write_text_atomic(path: Path, contents: str) -> None:
-    target = resolve_atomic_write_target(path, preserve_leaf_symlink=True)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(target.parent),
-        prefix=f'.{target.name}.',
-        suffix='.tmp',
-        text=True,
-    )
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
-            handle.write(contents)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, target)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
+    atomic_write_text(path, contents, preserve_leaf_symlink=True)
 
 
 def normalize_legacy_comment_syntax(text: str) -> str:

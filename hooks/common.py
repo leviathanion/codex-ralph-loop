@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Literal, TypedDict
@@ -44,6 +45,8 @@ STATUS_BLOCK_PATTERN = re.compile(
     rf'\r?\n[ \t]*{re.escape(RALPH_STATUS_END_MARKER)}[ \t]*$',
     re.DOTALL | re.MULTILINE,
 )
+MARKDOWN_FENCE_PATTERN = re.compile(r'^[ \t]{0,3}([`~]{3,})(.*)$')
+MARKDOWN_INDENTED_CODE_PATTERN = re.compile(r'^(?: {4,}|\t)')
 
 
 class ProgressDetails(TypedDict):
@@ -126,6 +129,83 @@ def resolve_atomic_write_target(path: Path, *, preserve_leaf_symlink: bool) -> P
         raise OSError(f'unable to resolve symlink target for {path}: {exc}') from exc
 
 
+def fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, 'O_DIRECTORY'):
+        flags |= os.O_DIRECTORY
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic_write_text(
+    path: Path,
+    contents: str,
+    *,
+    preserve_leaf_symlink: bool = False,
+) -> Path:
+    target = resolve_atomic_write_target(path, preserve_leaf_symlink=preserve_leaf_symlink)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(target.parent),
+        prefix=f'.{target.name}.',
+        suffix='.tmp',
+        text=True,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(contents)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, target)
+        # Trade-off: fsyncing the temp file only protects the new inode contents.
+        # Sync the parent directory after replace so crash recovery cannot lose the rename itself.
+        # If that directory fsync fails after the replace, the new bytes are already visible and
+        # cannot be rolled back reliably here, so keep atomic-write semantics coherent by treating
+        # the update as successful instead of surfacing a misleading "write failed" exception.
+        try:
+            fsync_directory(target.parent)
+        except OSError:
+            pass
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+    return target
+
+
+def atomic_write_bytes(
+    path: Path,
+    contents: bytes,
+    *,
+    preserve_leaf_symlink: bool = False,
+) -> Path:
+    target = resolve_atomic_write_target(path, preserve_leaf_symlink=preserve_leaf_symlink)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(target.parent),
+        prefix=f'.{target.name}.',
+        suffix='.tmp',
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            handle.write(contents)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, target)
+        try:
+            fsync_directory(target.parent)
+        except OSError:
+            pass
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+    return target
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
@@ -157,12 +237,89 @@ def completion_token_emitted(text: str, token: str) -> bool:
     return last_line == token
 
 
+def _mask_line_contents(line: str) -> str:
+    return ''.join(char if char in '\r\n' else ' ' for char in line)
+
+
+def mask_markdown_fenced_code_blocks(text: str) -> str:
+    # Trade-off: Ralph treats raw status markers as control syntax, but completed turns may also
+    # document the protocol. Mask fenced code blocks before marker scans so markdown examples do
+    # not participate in Stop-hook control flow while preserving character offsets for later slices.
+    # Only mask fences that close successfully; an unterminated fence is treated as normal content
+    # so malformed markdown cannot hide live control markers from the Stop hook.
+    masked_lines: list[str] = []
+    pending_fence_lines: list[str] | None = None
+    active_fence: tuple[str, int] | None = None
+
+    for raw_line in text.splitlines(keepends=True):
+        match = MARKDOWN_FENCE_PATTERN.match(raw_line)
+        if active_fence is None:
+            if match is None:
+                masked_lines.append(raw_line)
+                continue
+
+            fence = match.group(1)
+            active_fence = (fence[0], len(fence))
+            pending_fence_lines = [raw_line]
+            continue
+
+        assert pending_fence_lines is not None
+        pending_fence_lines.append(raw_line)
+        if match is None:
+            continue
+
+        fence = match.group(1)
+        if fence[0] != active_fence[0] or len(fence) < active_fence[1]:
+            continue
+        if match.group(2).strip():
+            continue
+        masked_lines.extend(_mask_line_contents(line) for line in pending_fence_lines)
+        pending_fence_lines = None
+        active_fence = None
+
+    if pending_fence_lines is not None:
+        masked_lines.extend(pending_fence_lines)
+
+    return ''.join(masked_lines)
+
+
+def mask_markdown_indented_code_blocks(text: str) -> str:
+    # Trade-off: treat classic 4-space/tab-indented markdown blocks as code too so protocol
+    # examples are never parsed as live Ralph control syntax. Real status blocks must therefore
+    # be emitted as ordinary prose, not inside markdown code formatting.
+    masked_lines: list[str] = []
+    inside_block = False
+
+    for raw_line in text.splitlines(keepends=True):
+        line = raw_line.rstrip('\r\n')
+        is_blank = not line.strip()
+        is_indented = bool(MARKDOWN_INDENTED_CODE_PATTERN.match(line))
+
+        if inside_block and (is_blank or is_indented):
+            masked_lines.append(_mask_line_contents(raw_line))
+            continue
+
+        inside_block = is_indented
+        if inside_block:
+            masked_lines.append(_mask_line_contents(raw_line))
+        else:
+            masked_lines.append(raw_line)
+
+    return ''.join(masked_lines)
+
+
+def mask_markdown_code_blocks(text: str) -> str:
+    return mask_markdown_indented_code_blocks(mask_markdown_fenced_code_blocks(text))
+
+
 def contains_ralph_status_markup(text: str) -> bool:
     # Trade-off: only treat standalone marker lines as control syntax.
-    # Inline mentions remain normal prose so completed turns can document the format safely.
+    # Inline mentions and markdown code examples remain normal prose so completed turns can
+    # document the format safely without tripping Stop-hook control flow.
+    searchable_text = mask_markdown_code_blocks(text)
     return (
-        bool(STATUS_START_LINE_PATTERN.search(text))
-        or bool(STATUS_END_LINE_PATTERN.search(text))
+        bool(STATUS_START_LINE_PATTERN.search(searchable_text))
+        or bool(STATUS_END_LINE_PATTERN.search(searchable_text))
     )
 
 
@@ -174,15 +331,16 @@ def parse_trailing_ralph_status(text: str) -> tuple[RalphStatusParseResult, bool
             'error': 'missing RALPH_STATUS block',
         }, False)
 
+    searchable_text = mask_markdown_code_blocks(trimmed)
     trailing_end = None
-    for match in STATUS_END_LINE_PATTERN.finditer(trimmed):
+    for match in STATUS_END_LINE_PATTERN.finditer(searchable_text):
         if trimmed[match.end():].strip():
             continue
         trailing_end = match
 
     if trailing_end is not None:
         trailing_start = None
-        for match in STATUS_START_LINE_PATTERN.finditer(trimmed[:trailing_end.start()]):
+        for match in STATUS_START_LINE_PATTERN.finditer(searchable_text[:trailing_end.start()]):
             trailing_start = match
         if trailing_start is None:
             return ({
@@ -197,9 +355,9 @@ def parse_trailing_ralph_status(text: str) -> tuple[RalphStatusParseResult, bool
 
     last_start = None
     last_end = None
-    for match in STATUS_START_LINE_PATTERN.finditer(trimmed):
+    for match in STATUS_START_LINE_PATTERN.finditer(searchable_text):
         last_start = match
-    for match in STATUS_END_LINE_PATTERN.finditer(trimmed):
+    for match in STATUS_END_LINE_PATTERN.finditer(searchable_text):
         last_end = match
     if last_start is not None and (last_end is None or last_start.start() > last_end.start()):
         return ({
@@ -214,7 +372,8 @@ def parse_trailing_ralph_status(text: str) -> tuple[RalphStatusParseResult, bool
 
 
 def parse_ralph_status(text: str, *, require_final: bool = True) -> RalphStatusParseResult:
-    matches = list(STATUS_BLOCK_PATTERN.finditer(text))
+    searchable_text = mask_markdown_code_blocks(text)
+    matches = list(STATUS_BLOCK_PATTERN.finditer(searchable_text))
     if not matches:
         return {
             'ok': False,
@@ -233,7 +392,10 @@ def parse_ralph_status(text: str, *, require_final: bool = True) -> RalphStatusP
             'error': 'RALPH_STATUS block must be the final non-whitespace content in the message',
         }
 
-    block = match.group(1)
+    block_text = text[match.start():match.end()]
+    block_match = STATUS_BLOCK_PATTERN.match(block_text)
+    assert block_match is not None
+    block = block_match.group(1)
     fields: dict[str, str] = {}
     for raw_line in block.splitlines():
         line = raw_line.strip()

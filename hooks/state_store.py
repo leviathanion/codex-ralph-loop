@@ -3,7 +3,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,6 +17,7 @@ from common import (
     LEDGER_PROGRESS_STATUSES,
     PROGRESS_RELATIVE_PATH,
     STATE_RELATIVE_PATH,
+    atomic_write_text,
     progress_path,
     state_path,
     symlink_component_error,
@@ -119,23 +119,7 @@ def workspace_lock(cwd: str | None = None):
 
 
 def _write_text_atomic(path: Path, contents: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent),
-        prefix=f'.{path.name}.',
-        suffix='.tmp',
-        text=True,
-    )
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
-            handle.write(contents)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
+    atomic_write_text(path, contents)
 
 
 def default_state() -> LoopState:

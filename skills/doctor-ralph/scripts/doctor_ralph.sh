@@ -6,8 +6,8 @@ ROOT_DIR="$(cd -- "${SELF_DIR}/../../.." && pwd -P)"
 source "${ROOT_DIR}/skills/_shared/scripts/ralph_common.sh"
 
 HOME_DIR="${HOME:?HOME is required}"
-CODEX_HOME="$(ralph_realpath "${CODEX_HOME:-${HOME_DIR}/.codex}")"
-AGENTS_HOME="$(ralph_realpath "${AGENTS_HOME:-${HOME_DIR}/.agents}")"
+CODEX_HOME="$(ralph_profile_path "${CODEX_HOME:-${HOME_DIR}/.codex}" "${HOME_DIR}")"
+AGENTS_HOME="$(ralph_profile_path "${AGENTS_HOME:-${HOME_DIR}/.agents}" "${HOME_DIR}")"
 
 if [[ "$#" -gt 1 ]]; then
   echo "usage: doctor_ralph.sh [workspace-root]" >&2

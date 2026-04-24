@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -13,6 +12,7 @@ from common import (
     DEFAULT_COMPLETION_TOKEN,
     DEFAULT_MAX_ITERATIONS,
     STATE_RELATIVE_PATH,
+    atomic_write_bytes,
     now_iso,
     state_path,
     symlink_component_error,
@@ -115,24 +115,10 @@ def restore_state(snapshot: StateSnapshot, cwd: str | None) -> None:
 
 
 def write_bytes_atomic(path: Path, contents: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent),
-        prefix=f'.{path.name}.',
-        suffix='.tmp',
-    )
-    tmp_path = Path(tmp_name)
     try:
-        with os.fdopen(fd, 'wb') as handle:
-            handle.write(contents)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
+        atomic_write_bytes(path, contents)
     except OSError as exc:
         raise StorageError(f'unable to restore {path}: {exc}') from exc
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
 
 
 def start_loop(

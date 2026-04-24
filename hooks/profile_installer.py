@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from common import resolve_atomic_write_target, symlink_component_error
+from common import fsync_directory, resolve_atomic_write_target, symlink_component_error
 from hook_registry import (
     build_stop_command,
     read_hook_registry,
@@ -215,6 +215,7 @@ def copy_file_atomic(source: Path, destination: Path) -> None:
         shutil.copy2(source, tmp_path)
         fsync_file(tmp_path)
         os.replace(tmp_path, destination)
+        fsync_directory(destination.parent)
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
@@ -398,12 +399,23 @@ def uninstall_hooks(paths: InstallPaths, transaction: InstallTransaction, change
             unregister_status = unregister_stop_hook(paths.hooks_json, stop_command)
             if unregister_status == 'removed':
                 changes.append('removed Stop hook registration')
+        elif registry_result.status == 'read_error':
+            details = '; '.join(registry_result.errors) if registry_result.errors else f'failed to read {paths.hooks_json}'
+            # Trade-off: a readable-but-invalid registry can be left untouched while Ralph removes
+            # its local hook files, because we can already prove the file is broken and cannot
+            # trust any targeted rewrite. An unreadable registry is different: Ralph cannot verify
+            # whether a live Stop-hook registration still points at this script, so abort before
+            # deleting files and let the caller repair access first.
+            raise ValueError(
+                'unable to verify Ralph Stop hook registration before removing hook files: '
+                f'{details}'
+            )
         elif registry_result.status != 'missing':
             details = '; '.join(registry_result.errors) if registry_result.errors else f'failed to read {paths.hooks_json}'
-            # Trade-off: if hooks.json is already invalid, uninstall should still remove Ralph's
-            # local hook files instead of rewriting a malformed profile-wide registry. A readable
-            # but unwritable registry still raises before any file deletion because that can leave
-            # a live Stop-hook registration pointing at a missing script.
+            # Trade-off: if hooks.json is readable but already invalid, uninstall should still
+            # remove Ralph's local hook files instead of rewriting a malformed profile-wide
+            # registry. Doctor will keep surfacing the broken file, but uninstall still succeeds
+            # in removing Ralph-managed artifacts from disk.
             hooks_json_error = details
 
     for hook_name in HOOK_NAMES:

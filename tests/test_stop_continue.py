@@ -203,6 +203,32 @@ class StopContinueHookTests(unittest.TestCase):
             entries = self.read_progress(workspace)
             self.assertEqual(entries[-1]['status'], 'complete')
 
+    def test_completion_token_ignores_indented_status_example_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_store.save_state(make_state(), str(workspace))
+
+            result = self.run_hook(workspace, {
+                'cwd': str(workspace),
+                'session_id': 'session-1',
+                'last_assistant_message': (
+                    'Document the required format for future contributors.\n'
+                    '    ---RALPH_STATUS---\n'
+                    '    STATUS: progress\n'
+                    '    SUMMARY: example only\n'
+                    '    FILES:\n'
+                    '    CHECKS:\n'
+                    '    ---END_RALPH_STATUS---\n'
+                    '<promise>DONE</promise>'
+                ),
+            })
+
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+            self.assertFalse(common.state_path(str(workspace)).exists())
+            entries = self.read_progress(workspace)
+            self.assertEqual(entries[-1]['status'], 'complete')
+
     def test_completion_token_prefers_terminal_status_block_over_earlier_example(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
@@ -264,6 +290,64 @@ class StopContinueHookTests(unittest.TestCase):
             entries = self.read_progress(workspace)
             self.assertEqual(entries[-1]['status'], 'progress')
             self.assertTrue(common.state_path(str(workspace)).exists())
+
+    def test_unfinished_turn_rejects_trailing_fenced_code_after_status_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_store.save_state(make_state(), str(workspace))
+
+            result = self.run_hook(workspace, {
+                'cwd': str(workspace),
+                'session_id': 'session-1',
+                'last_assistant_message': (
+                    '---RALPH_STATUS---\n'
+                    'STATUS: progress\n'
+                    'SUMMARY: still working\n'
+                    'FILES: hooks/common.py\n'
+                    'CHECKS: passed:python3 -m unittest\n'
+                    '---END_RALPH_STATUS---\n'
+                    '```text\n'
+                    'extra trailing content\n'
+                    '```\n'
+                ),
+            })
+
+            response = json.loads(result.stdout)
+            self.assertIn('final non-whitespace content', response['systemMessage'])
+            self.assertEqual(self.read_state(workspace)['phase'], 'blocked')
+
+            entries = self.read_progress(workspace)
+            self.assertEqual(entries[-1]['status'], 'stopped')
+            self.assertEqual(entries[-1]['reason'], 'invalid_status_block')
+
+    def test_completion_token_rejects_trailing_indented_content_after_status_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_store.save_state(make_state(), str(workspace))
+
+            result = self.run_hook(workspace, {
+                'cwd': str(workspace),
+                'session_id': 'session-1',
+                'last_assistant_message': (
+                    '---RALPH_STATUS---\n'
+                    'STATUS: complete\n'
+                    'SUMMARY: wrapped up the task\n'
+                    'FILES: hooks/stop_continue.py\n'
+                    'CHECKS: passed:python3 -m unittest\n'
+                    '---END_RALPH_STATUS---\n'
+                    '    extra trailing content\n'
+                    '<promise>DONE</promise>'
+                ),
+            })
+
+            response = json.loads(result.stdout)
+            self.assertIn('non-terminal RALPH_STATUS markup', response['systemMessage'])
+            self.assertTrue(common.state_path(str(workspace)).exists())
+            self.assertEqual(self.read_state(workspace)['phase'], 'blocked')
+
+            entries = self.read_progress(workspace)
+            self.assertEqual(entries[-1]['status'], 'stopped')
+            self.assertEqual(entries[-1]['reason'], 'invalid_status_block')
 
     def test_legacy_state_shape_continues_and_is_upgraded_on_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -355,6 +439,36 @@ class StopContinueHookTests(unittest.TestCase):
             self.assertEqual(entries[-1]['status'], 'stopped')
             self.assertEqual(entries[-1]['reason'], 'invalid_status_block')
 
+    def test_completion_token_rejects_nonterminal_status_block_before_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_store.save_state(make_state(), str(workspace))
+
+            result = self.run_hook(workspace, {
+                'cwd': str(workspace),
+                'session_id': 'session-1',
+                'last_assistant_message': (
+                    '---RALPH_STATUS---\n'
+                    'STATUS: progress\n'
+                    'SUMMARY: not actually done yet\n'
+                    'FILES: hooks/stop_continue.py\n'
+                    'CHECKS: passed:python3 -m unittest\n'
+                    '---END_RALPH_STATUS---\n'
+                    'Extra text after the status block.\n'
+                    '<promise>DONE</promise>'
+                ),
+            })
+
+            response = json.loads(result.stdout)
+            self.assertIn('non-terminal RALPH_STATUS markup', response['systemMessage'])
+            self.assertIn('final non-whitespace content', response['systemMessage'])
+            self.assertTrue(common.state_path(str(workspace)).exists())
+            self.assertEqual(self.read_state(workspace)['phase'], 'blocked')
+
+            entries = self.read_progress(workspace)
+            self.assertEqual(entries[-1]['status'], 'stopped')
+            self.assertEqual(entries[-1]['reason'], 'invalid_status_block')
+
     def test_blocked_status_stops_loop_and_records_reason(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
@@ -418,6 +532,35 @@ class StopContinueHookTests(unittest.TestCase):
                 'cwd': str(workspace),
                 'session_id': 'session-1',
                 'last_assistant_message': 'still working on the task',
+            })
+
+            self.assertEqual(result.returncode, 0)
+            response = json.loads(result.stdout)
+            self.assertIn('valid RALPH_STATUS block', response['systemMessage'])
+            self.assertTrue(common.state_path(str(workspace)).exists())
+            self.assertEqual(self.read_state(workspace)['phase'], 'blocked')
+
+            entries = self.read_progress(workspace)
+            self.assertEqual(entries[-1]['status'], 'stopped')
+            self.assertEqual(entries[-1]['reason'], 'invalid_status_block')
+
+    def test_indented_status_example_block_does_not_continue_unfinished_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_store.save_state(make_state(), str(workspace))
+
+            result = self.run_hook(workspace, {
+                'cwd': str(workspace),
+                'session_id': 'session-1',
+                'last_assistant_message': (
+                    'Document the required format for future contributors.\n'
+                    '    ---RALPH_STATUS---\n'
+                    '    STATUS: progress\n'
+                    '    SUMMARY: example only\n'
+                    '    FILES:\n'
+                    '    CHECKS:\n'
+                    '    ---END_RALPH_STATUS---\n'
+                ),
             })
 
             self.assertEqual(result.returncode, 0)
@@ -824,10 +967,10 @@ class StopContinueHookTests(unittest.TestCase):
             self.assertEqual(result.stdout, '')
             self.assertEqual(self.read_progress(workspace), [])
 
-    def test_missing_session_id_is_noop_for_claimed_loop(self) -> None:
+    def test_missing_session_id_payload_stops_cleanly_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
-            original_state = make_state(claimed_session_id='session-a')
+            original_state = make_state()
             state_store.save_state(original_state, str(workspace))
 
             result = self.run_hook(workspace, {
@@ -836,14 +979,17 @@ class StopContinueHookTests(unittest.TestCase):
                 'last_assistant_message': (
                     '---RALPH_STATUS---\n'
                     'STATUS: progress\n'
-                    'SUMMARY: should be ignored without the claim token\n'
+                    'SUMMARY: should be rejected without a session id\n'
                     'FILES:\n'
                     'CHECKS:\n'
                     '---END_RALPH_STATUS---'
                 ),
             })
 
-            self.assertEqual(result.stdout, '')
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stderr, '')
+            response = json.loads(result.stdout)
+            self.assertIn('session_id must be a non-empty string', response['systemMessage'])
             self.assertEqual(self.read_progress(workspace), [])
             self.assertEqual(self.read_state(workspace), original_state)
 
@@ -989,7 +1135,7 @@ class StopContinueHookTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stderr, '')
             response = json.loads(result.stdout)
-            self.assertIn('session_id must be a non-empty string when present', response['systemMessage'])
+            self.assertIn('session_id must be a non-empty string', response['systemMessage'])
             self.assertEqual(self.read_progress(workspace), [])
             self.assertEqual(self.read_state(workspace), original_state)
 

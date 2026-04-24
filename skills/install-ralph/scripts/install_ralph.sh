@@ -3,10 +3,11 @@ set -euo pipefail
 
 SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd -- "${SELF_DIR}/../../.." && pwd -P)"
+source "${ROOT_DIR}/skills/_shared/scripts/ralph_common.sh"
 
 HOME_DIR="${HOME:?HOME is required}"
-CODEX_HOME="${CODEX_HOME:-${HOME_DIR}/.codex}"
-AGENTS_HOME="${AGENTS_HOME:-${HOME_DIR}/.agents}"
+CODEX_HOME="$(ralph_profile_path "${CODEX_HOME:-${HOME_DIR}/.codex}" "${HOME_DIR}")"
+AGENTS_HOME="$(ralph_profile_path "${AGENTS_HOME:-${HOME_DIR}/.agents}" "${HOME_DIR}")"
 
 MODE="all"
 for arg in "$@"; do

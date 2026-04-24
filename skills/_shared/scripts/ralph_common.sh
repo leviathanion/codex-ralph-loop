@@ -33,6 +33,21 @@ print(Path(sys.argv[1]).expanduser().resolve(strict=False))
 PY
 }
 
+ralph_profile_path() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+from pathlib import Path
+
+raw_path = Path(sys.argv[1]).expanduser()
+home_dir = Path(sys.argv[2]).expanduser().resolve(strict=False)
+
+if raw_path.is_absolute():
+    print(raw_path.resolve(strict=False))
+else:
+    print((home_dir / raw_path).resolve(strict=False))
+PY
+}
+
 ralph_stop_hook_command() {
   local script_path
   script_path="$(ralph_realpath "$1")"
