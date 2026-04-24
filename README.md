@@ -50,6 +50,15 @@ Runtime behavior is split cleanly:
 - `$doctor-ralph` validates installation and workspace state.
 - The `Stop` hook keeps unfinished `phase="running"` loops moving until the completion token is emitted on the final non-whitespace line by itself, pauses recoverable stops in-place, and clears state only on completion or the iteration cap.
 
+## Python dependency
+
+Ralph uses Python's standard `tomllib` on Python 3.11 and newer. On Python 3.10 and older,
+install the declared fallback dependency first:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
 ## Install directly
 
 Use the install skill after the skills are available:
