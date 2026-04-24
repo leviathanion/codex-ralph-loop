@@ -57,6 +57,16 @@ class StopContinueHookTests(unittest.TestCase):
     def read_state(self, workspace: Path) -> dict[str, object]:
         return json.loads(common.state_path(str(workspace)).read_text(encoding='utf-8'))
 
+    def test_state_value_reports_ok_read_without_state_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+
+            with self.assertRaisesRegex(state_store.StorageError, 'internal state read returned no payload'):
+                stop_continue.state_value_or_storage_error(
+                    state_store.StateReadResult(status='ok'),
+                    str(workspace),
+                )
+
     def write_delayed_read_state_worker(self, root: Path, delay_seconds: float) -> Path:
         worker = root / '.tmp_stop_continue_worker.py'
         worker.write_text(

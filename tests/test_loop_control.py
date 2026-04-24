@@ -47,6 +47,61 @@ class LoopControlTests(unittest.TestCase):
             self.assertEqual(entries[0]['status'], 'started')
             self.assertEqual(entries[0]['summary'], 'Ralph loop started')
 
+    def test_snapshot_state_rejects_state_file_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_file = common.state_path(str(workspace))
+            target = workspace / 'external-state.json'
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('{}\n', encoding='utf-8')
+            os.symlink(target, state_file)
+
+            with self.assertRaisesRegex(state_store.StorageError, 'path component is a symlink'):
+                loop_control.snapshot_state(str(workspace))
+
+    def test_restore_file_snapshot_requires_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+
+            with self.assertRaisesRegex(state_store.StorageError, 'file snapshot is missing contents'):
+                loop_control.restore_state(loop_control.StateSnapshot(kind='file'), str(workspace))
+
+    def test_start_loop_validates_request_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+
+            with mock.patch.object(
+                loop_control,
+                '_validate_start_request',
+                wraps=loop_control._validate_start_request,
+            ) as validate_mock:
+                result = loop_control.start_loop(
+                    cwd=str(workspace),
+                    prompt='Ship the feature',
+                    max_iterations=5,
+                    completion_token='<promise>DONE</promise>',
+                )
+
+            self.assertEqual(result['status'], 'started')
+            validate_mock.assert_called_once_with('Ship the feature', 5, '<promise>DONE</promise>')
+
+    def test_start_loop_reports_ok_read_without_state_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+
+            with mock.patch.object(
+                loop_control,
+                'read_state',
+                return_value=state_store.StateReadResult(status='ok'),
+            ):
+                with self.assertRaisesRegex(state_store.StorageError, 'internal state read returned no payload'):
+                    loop_control.start_loop(
+                        cwd=str(workspace),
+                        prompt='Ship the feature',
+                        max_iterations=5,
+                        completion_token='<promise>DONE</promise>',
+                    )
+
     def test_start_loop_succeeds_when_directory_fsync_fails_after_replace(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)

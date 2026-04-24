@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from contextlib import redirect_stderr
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOKS_DIR = REPO_ROOT / 'hooks'
@@ -46,6 +47,18 @@ class HookRegistryTests(unittest.TestCase):
             self.assertEqual(status, 'added')
             saved = json.loads(hooks_json.read_text(encoding='utf-8'))
             self.assertTrue(hook_registry.stop_hook_registered(saved, 'python3 /tmp/stop_continue.py'))
+
+    def test_register_stop_hook_reports_ok_read_without_registry_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hooks_json = Path(tmpdir) / 'hooks.json'
+
+            with mock.patch.object(
+                hook_registry,
+                'read_hook_registry',
+                return_value=hook_registry.HookRegistryReadResult(status='ok'),
+            ):
+                with self.assertRaisesRegex(ValueError, 'internal hook registry read returned no payload'):
+                    hook_registry.register_stop_hook(hooks_json, 'python3 /tmp/stop_continue.py')
 
     def test_read_hook_registry_reports_unreadable_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
