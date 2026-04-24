@@ -263,7 +263,8 @@ def mask_markdown_fenced_code_blocks(text: str) -> str:
             pending_fence_lines = [raw_line]
             continue
 
-        assert pending_fence_lines is not None
+        if pending_fence_lines is None:
+            raise RuntimeError('internal markdown fence parser lost the pending fence buffer')
         pending_fence_lines.append(raw_line)
         if match is None:
             continue
@@ -394,7 +395,11 @@ def parse_ralph_status(text: str, *, require_final: bool = True) -> RalphStatusP
 
     block_text = text[match.start():match.end()]
     block_match = STATUS_BLOCK_PATTERN.match(block_text)
-    assert block_match is not None
+    if block_match is None:
+        return {
+            'ok': False,
+            'error': 'internal RALPH_STATUS parser failed to re-read the matched block',
+        }
     block = block_match.group(1)
     fields: dict[str, str] = {}
     for raw_line in block.splitlines():
