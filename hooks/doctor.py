@@ -7,6 +7,7 @@ from pathlib import Path
 from common import progress_path, state_path, symlink_component_error, workspace_root_error
 from hook_registry import (
     build_stop_command,
+    hook_registry_value_or_error,
     inspect_stop_hook_registration,
     read_hook_registry,
 )
@@ -149,31 +150,34 @@ def main() -> int:
     elif registry_result.status == 'invalid_schema':
         add_check(checks, 'FAIL', 'Hook Registry', '; '.join(registry_result.errors))
     else:
-        registry = registry_result.value
-        assert registry is not None
-        inspection = inspect_stop_hook_registration(registry, stop_command)
-        if inspection.equivalent_count == 0:
-            add_check(checks, 'FAIL', 'Hook Registry', 'Ralph Stop hook is not registered')
-        elif inspection.equivalent_count > 1:
-            add_check(
-                checks,
-                'FAIL',
-                'Hook Registry',
-                (
-                    'found '
-                    f'{inspection.equivalent_count} equivalent Ralph Stop hook registrations; '
-                    'expected exactly 1 shell-safe command'
-                ),
-            )
-        elif inspection.shell_safe_count == 1:
-            add_check(checks, 'OK', 'Hook Registry', f'Stop hook registered as "{stop_command}"')
+        try:
+            registry = hook_registry_value_or_error(registry_result, hooks_json)
+        except ValueError as exc:
+            add_check(checks, 'FAIL', 'Hook Registry', str(exc))
         else:
-            add_check(
-                checks,
-                'FAIL',
-                'Hook Registry',
-                'Ralph Stop hook exists but the command is malformed and will not survive shell parsing',
-            )
+            inspection = inspect_stop_hook_registration(registry, stop_command)
+            if inspection.equivalent_count == 0:
+                add_check(checks, 'FAIL', 'Hook Registry', 'Ralph Stop hook is not registered')
+            elif inspection.equivalent_count > 1:
+                add_check(
+                    checks,
+                    'FAIL',
+                    'Hook Registry',
+                    (
+                        'found '
+                        f'{inspection.equivalent_count} equivalent Ralph Stop hook registrations; '
+                        'expected exactly 1 shell-safe command'
+                    ),
+                )
+            elif inspection.shell_safe_count == 1:
+                add_check(checks, 'OK', 'Hook Registry', f'Stop hook registered as "{stop_command}"')
+            else:
+                add_check(
+                    checks,
+                    'FAIL',
+                    'Hook Registry',
+                    'Ralph Stop hook exists but the command is malformed and will not survive shell parsing',
+                )
 
     config_toml = codex_home / 'config.toml'
     try:

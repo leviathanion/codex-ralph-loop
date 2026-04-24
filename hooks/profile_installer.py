@@ -13,6 +13,7 @@ from typing import Literal
 from common import fsync_directory, resolve_atomic_write_target, symlink_component_error
 from hook_registry import (
     build_stop_command,
+    hook_registry_value_or_error,
     read_hook_registry,
     register_stop_hook,
     stop_hook_registered,
@@ -165,7 +166,8 @@ class InstallTransaction:
 
         snapshot.path.parent.mkdir(parents=True, exist_ok=True)
         if snapshot.kind == 'file':
-            assert snapshot.backup_path is not None
+            if snapshot.backup_path is None:
+                raise RuntimeError(f'internal install snapshot for {snapshot.path} is missing its file backup')
             if snapshot.path.is_file() and files_match(snapshot.backup_path, snapshot.path):
                 return
             if snapshot.path.is_symlink() or snapshot.path.is_dir():
@@ -176,12 +178,14 @@ class InstallTransaction:
             if snapshot.path.is_symlink() and os.readlink(snapshot.path) == snapshot.symlink_target:
                 return
             self._remove_path(snapshot.path)
-            assert snapshot.symlink_target is not None
+            if snapshot.symlink_target is None:
+                raise RuntimeError(f'internal install snapshot for {snapshot.path} is missing its symlink target')
             os.symlink(snapshot.symlink_target, snapshot.path)
             return
 
         self._remove_path(snapshot.path)
-        assert snapshot.backup_path is not None
+        if snapshot.backup_path is None:
+            raise RuntimeError(f'internal install snapshot for {snapshot.path} is missing its directory backup')
         shutil.copytree(snapshot.backup_path, snapshot.path, symlinks=True)
 
     @staticmethod
@@ -247,8 +251,7 @@ def validate_stop_hook_registration(hooks_json: Path, stop_command: str) -> None
         details = '; '.join(result.errors) if result.errors else f'failed to read {hooks_json}'
         raise ValueError(details)
 
-    registry = result.value
-    assert registry is not None
+    registry = hook_registry_value_or_error(result, hooks_json)
     if not stop_hook_registered(registry, stop_command, require_shell_safe=True):
         raise ValueError('failed to register Stop hook')
 

@@ -141,6 +141,12 @@ def read_hook_registry(path: Path) -> HookRegistryReadResult:
     return HookRegistryReadResult(status='ok', value=cast(HookRegistry, payload))
 
 
+def hook_registry_value_or_error(result: HookRegistryReadResult, path: Path) -> HookRegistry:
+    if result.value is None:
+        raise ValueError(f'unable to read {path}: internal hook registry read returned no payload')
+    return result.value
+
+
 def write_hook_registry(path: Path, registry: HookRegistry) -> None:
     errors = validate_hook_registry_payload(registry)
     if errors:
@@ -257,12 +263,10 @@ def register_stop_hook(path: Path, stop_command: str) -> str:
     if result.status == 'missing':
         registry = empty_hook_registry()
     elif result.status == 'ok':
-        registry = result.value
-        assert registry is not None
+        registry = hook_registry_value_or_error(result, path)
     else:
         raise ValueError('; '.join(result.errors))
 
-    assert registry is not None
     inspection = inspect_stop_hook_registration(registry, stop_command)
     if inspection.equivalent_count == 1 and inspection.shell_safe_count == 1:
         return 'unchanged'
@@ -329,8 +333,7 @@ def unregister_stop_hook(path: Path, stop_command: str) -> str:
     if result.status != 'ok':
         raise ValueError('; '.join(result.errors))
 
-    registry = result.value
-    assert registry is not None
+    registry = hook_registry_value_or_error(result, path)
     if not stop_hook_registered(registry, stop_command):
         return 'unchanged'
 
@@ -377,8 +380,7 @@ def main(argv: list[str] | None = None) -> int:
             if result.status == 'missing':
                 print('false')
             elif result.status == 'ok':
-                registry = result.value
-                assert registry is not None
+                registry = hook_registry_value_or_error(result, path)
                 print('true' if stop_hook_registered(registry, stop_command, require_shell_safe=True) else 'false')
             else:
                 raise ValueError('; '.join(result.errors))
