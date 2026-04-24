@@ -13,6 +13,7 @@ from common import (
     now_iso,
     parse_ralph_status,
     parse_trailing_ralph_status,
+    state_path,
     truncate_summary,
     workspace_path,
     workspace_root_error,
@@ -229,6 +230,12 @@ def state_needs_session_payload(state_result: StateReadResult) -> bool:
     if state is None:
         return False
     return state['active'] and state['phase'] == 'running'
+
+
+def state_value_or_storage_error(state_result: StateReadResult, cwd: str) -> LoopState:
+    if state_result.value is None:
+        raise StorageError(f'unable to read {state_path(cwd)}: internal state read returned no payload')
+    return state_result.value
 
 
 def process_stop_state(
@@ -522,8 +529,7 @@ def main() -> int:
             if state_exit is not None:
                 return state_exit
 
-            state = state_result.value
-            assert state is not None
+            state = state_value_or_storage_error(state_result, cwd)
             return process_stop_state(
                 state=state,
                 cwd=cwd,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +20,9 @@ from common import (
     workspace_root_error,
 )
 from state_store import (
+    LoopState,
     StorageError,
+    StateReadResult,
     append_progress_entry,
     clear_state,
     default_state,
@@ -32,14 +33,13 @@ from state_store import (
 )
 
 
-SnapshotKind = Literal['missing', 'file', 'symlink']
+SnapshotKind = Literal['missing', 'file']
 
 
 @dataclass(frozen=True)
 class StateSnapshot:
     kind: SnapshotKind
     contents: bytes | None = None
-    symlink_target: str | None = None
 
 
 def _state_storage_error(cwd: str | None) -> str | None:
@@ -88,16 +88,17 @@ def emit_result(payload: dict[str, Any]) -> int:
     return 0
 
 
+def state_value_or_storage_error(result: StateReadResult, cwd: str | None) -> LoopState:
+    if result.value is None:
+        raise StorageError(f'unable to read {state_path(cwd)}: internal state read returned no payload')
+    return result.value
+
+
 def snapshot_state(cwd: str | None) -> StateSnapshot:
     path = state_path(cwd)
     symlink_error = _state_storage_error(cwd)
     if symlink_error is not None:
         raise StorageError(f'unable to snapshot {path} before starting Ralph: {symlink_error}')
-    if path.is_symlink():
-        try:
-            return StateSnapshot(kind='symlink', symlink_target=os.readlink(path))
-        except OSError as exc:
-            raise StorageError(f'unable to snapshot {path} before starting Ralph: {exc}') from exc
     if not path.exists():
         return StateSnapshot(kind='missing')
     if path.is_dir():
@@ -117,18 +118,11 @@ def restore_state(snapshot: StateSnapshot, cwd: str | None) -> None:
         clear_state(cwd)
         return
     if snapshot.kind == 'file':
-        assert snapshot.contents is not None
+        if snapshot.contents is None:
+            raise StorageError(f'unable to restore {path}: internal file snapshot is missing contents')
         write_bytes_atomic(path, snapshot.contents)
         return
-
-    assert snapshot.symlink_target is not None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.is_symlink() or path.exists():
-            path.unlink()
-        os.symlink(snapshot.symlink_target, path)
-    except OSError as exc:
-        raise StorageError(f'unable to restore {path}: {exc}') from exc
+    raise StorageError(f'unable to restore {path}: unsupported state snapshot kind {snapshot.kind!r}')
 
 
 def write_bytes_atomic(path: Path, contents: bytes) -> None:
@@ -160,8 +154,7 @@ def start_loop(
     if existing_state.status == 'read_error':
         raise StorageError('; '.join(existing_state.errors))
     if existing_state.status == 'ok':
-        current_state = existing_state.value
-        assert current_state is not None
+        current_state = state_value_or_storage_error(existing_state, cwd)
         if current_state['active']:
             raise ValueError(
                 'An active Ralph loop already exists in this workspace. Use $continue-ralph-loop to resume it, or '
@@ -184,8 +177,6 @@ def _start_loop_locked(
     max_iterations: int,
     completion_token: str,
 ) -> dict[str, Any]:
-    _validate_start_request(prompt, max_iterations, completion_token)
-
     existing_state = read_state(cwd)
     if existing_state.status == 'invalid_json':
         raise ValueError(
@@ -198,8 +189,7 @@ def _start_loop_locked(
     if existing_state.status == 'read_error':
         raise StorageError('; '.join(existing_state.errors))
     if existing_state.status == 'ok':
-        current_state = existing_state.value
-        assert current_state is not None
+        current_state = state_value_or_storage_error(existing_state, cwd)
         if current_state['active']:
             raise ValueError(
                 'An active Ralph loop already exists in this workspace. Use $continue-ralph-loop to resume it, or '
@@ -278,8 +268,7 @@ def resume_loop(*, cwd: str | None) -> dict[str, Any]:
     if result.status == 'read_error':
         raise StorageError('; '.join(result.errors))
 
-    state = result.value
-    assert state is not None
+    state = state_value_or_storage_error(result, cwd)
     if not state['active']:
         return {
             'status': 'inactive',
@@ -312,8 +301,7 @@ def _resume_loop_locked(*, cwd: str | None) -> dict[str, Any]:
     if result.status == 'read_error':
         raise StorageError('; '.join(result.errors))
 
-    state = result.value
-    assert state is not None
+    state = state_value_or_storage_error(result, cwd)
     if not state['active']:
         return {
             'status': 'inactive',
