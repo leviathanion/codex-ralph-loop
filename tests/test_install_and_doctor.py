@@ -305,6 +305,19 @@ class InstallAndDoctorTests(unittest.TestCase):
             self.assertIn('left shared codex_hooks feature flag unchanged', uninstall.stdout)
             self.assertEqual(config_toml.read_text(encoding='utf-8'), original_config)
 
+    def test_uninstall_pristine_profile_reports_nothing_to_uninstall(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            env = self.make_env(home)
+
+            uninstall = self.run_script(UNINSTALL_SCRIPT, cwd=workspace, env=env)
+
+            self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
+            self.assertIn('Nothing to uninstall.', uninstall.stdout)
+            self.assertNotIn('Uninstalled Codex Ralph:', uninstall.stdout)
+            self.assertNotIn('left shared codex_hooks feature flag unchanged', uninstall.stdout)
+
     def test_uninstall_skills_leaves_foreign_skill_symlink_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
             home = Path(tmp_home)

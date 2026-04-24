@@ -384,6 +384,7 @@ def install_hooks(paths: InstallPaths, transaction: InstallTransaction, changes:
 
 
 def uninstall_hooks(paths: InstallPaths, transaction: InstallTransaction, changes: list[str]) -> None:
+    initial_change_count = len(changes)
     try:
         validate_managed_hook_directory(paths)
     except ValueError as exc:
@@ -432,7 +433,11 @@ def uninstall_hooks(paths: InstallPaths, transaction: InstallTransaction, change
     if hooks_json_error is not None:
         changes.append(f'left hooks.json unchanged ({hooks_json_error})')
 
-    changes.append('left shared codex_hooks feature flag unchanged (profile-wide Codex setting)')
+    if len(changes) > initial_change_count:
+        # Trade-off: keep warning users that uninstall intentionally leaves the shared Codex hook
+        # feature flag enabled, but do not let that informational note turn a true no-op uninstall
+        # into a misleading "Uninstalled Codex Ralph" result.
+        changes.append('left shared codex_hooks feature flag unchanged (profile-wide Codex setting)')
 
 
 def ensure_feature_flag(paths: InstallPaths, transaction: InstallTransaction, changes: list[str]) -> None:
