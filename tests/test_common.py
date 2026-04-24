@@ -319,6 +319,43 @@ CHECKS: passed:first; failed:second
         self.assertEqual(parsed['files'], ['a.py', 'b.py'])
         self.assertEqual(parsed['checks'], ['passed:first', 'failed:second'])
 
+    def test_parse_ralph_status_accepts_crlf_line_endings(self) -> None:
+        message = (
+            'Still working\r\n'
+            '---RALPH_STATUS---\r\n'
+            'STATUS: progress\r\n'
+            'SUMMARY: still working\r\n'
+            'FILES: hooks/common.py\r\n'
+            'CHECKS: passed:pytest -q\r\n'
+            '---END_RALPH_STATUS---\r\n'
+        )
+
+        parsed = common.parse_ralph_status(message)
+
+        self.assertTrue(parsed['ok'])
+        self.assertEqual(parsed['status'], 'progress')
+        self.assertEqual(parsed['summary'], 'still working')
+        self.assertEqual(parsed['files'], ['hooks/common.py'])
+        self.assertEqual(parsed['checks'], ['passed:pytest -q'])
+        self.assertTrue(common.contains_ralph_status_markup(message))
+
+    def test_parse_trailing_ralph_status_accepts_crlf_line_endings(self) -> None:
+        message = (
+            'Wrapped up\r\n'
+            '---RALPH_STATUS---\r\n'
+            'STATUS: complete\r\n'
+            'SUMMARY: done\r\n'
+            'FILES:\r\n'
+            'CHECKS:\r\n'
+            '---END_RALPH_STATUS---\r\n'
+        )
+
+        parsed, attempted = common.parse_trailing_ralph_status(message)
+
+        self.assertTrue(attempted)
+        self.assertTrue(parsed['ok'])
+        self.assertEqual(parsed['status'], 'complete')
+
     def test_parse_ralph_status_rejects_trailing_fenced_code_after_status_block(self) -> None:
         message = (
             '---RALPH_STATUS---\n'

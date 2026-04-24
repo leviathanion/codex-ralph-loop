@@ -306,6 +306,63 @@ class StopContinueHookTests(unittest.TestCase):
             self.assertEqual(entries[-1]['status'], 'progress')
             self.assertTrue(common.state_path(str(workspace)).exists())
 
+    def test_unfinished_turn_accepts_crlf_status_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_store.save_state(make_state(), str(workspace))
+
+            result = self.run_hook(workspace, {
+                'cwd': str(workspace),
+                'session_id': 'session-1',
+                'last_assistant_message': (
+                    'Still working\r\n'
+                    '---RALPH_STATUS---\r\n'
+                    'STATUS: progress\r\n'
+                    'SUMMARY: kept moving\r\n'
+                    'FILES: hooks/common.py\r\n'
+                    'CHECKS: passed:pytest -q\r\n'
+                    '---END_RALPH_STATUS---\r\n'
+                ),
+            })
+
+            response = json.loads(result.stdout)
+            self.assertEqual(response['decision'], 'block')
+            state = self.read_state(workspace)
+            self.assertEqual(state['iteration'], 1)
+            self.assertEqual(state['phase'], 'running')
+
+            entries = self.read_progress(workspace)
+            self.assertEqual(entries[-1]['status'], 'progress')
+            self.assertEqual(entries[-1]['summary'], 'kept moving')
+
+    def test_completion_token_accepts_crlf_status_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_store.save_state(make_state(), str(workspace))
+
+            result = self.run_hook(workspace, {
+                'cwd': str(workspace),
+                'session_id': 'session-1',
+                'last_assistant_message': (
+                    'Done\r\n'
+                    '---RALPH_STATUS---\r\n'
+                    'STATUS: complete\r\n'
+                    'SUMMARY: finished\r\n'
+                    'FILES: hooks/common.py\r\n'
+                    'CHECKS: passed:pytest -q\r\n'
+                    '---END_RALPH_STATUS---\r\n'
+                    '<promise>DONE</promise>\r\n'
+                ),
+            })
+
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+            self.assertFalse(common.state_path(str(workspace)).exists())
+
+            entries = self.read_progress(workspace)
+            self.assertEqual(entries[-1]['status'], 'complete')
+            self.assertEqual(entries[-1]['summary'], 'finished')
+
     def test_unfinished_turn_rejects_trailing_fenced_code_after_status_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)

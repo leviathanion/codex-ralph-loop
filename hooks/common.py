@@ -32,17 +32,17 @@ LEDGER_PROGRESS_STATUSES = ASSISTANT_PROGRESS_STATUSES | {
 STATUS_BLOCK_REQUIRED_FIELDS = ('STATUS', 'SUMMARY', 'FILES', 'CHECKS')
 STATUS_BLOCK_ALLOWED_FIELDS = frozenset(STATUS_BLOCK_REQUIRED_FIELDS)
 STATUS_START_LINE_PATTERN = re.compile(
-    rf'^[ \t]*{re.escape(RALPH_STATUS_START_MARKER)}[ \t]*$',
+    rf'^[ \t]*{re.escape(RALPH_STATUS_START_MARKER)}[ \t]*\r?$',
     re.MULTILINE,
 )
 STATUS_END_LINE_PATTERN = re.compile(
-    rf'^[ \t]*{re.escape(RALPH_STATUS_END_MARKER)}[ \t]*$',
+    rf'^[ \t]*{re.escape(RALPH_STATUS_END_MARKER)}[ \t]*\r?$',
     re.MULTILINE,
 )
 STATUS_BLOCK_PATTERN = re.compile(
     rf'^[ \t]*{re.escape(RALPH_STATUS_START_MARKER)}[ \t]*\r?\n'
     rf'(.*?)'
-    rf'\r?\n[ \t]*{re.escape(RALPH_STATUS_END_MARKER)}[ \t]*$',
+    rf'\r?\n[ \t]*{re.escape(RALPH_STATUS_END_MARKER)}[ \t]*\r?$',
     re.DOTALL | re.MULTILINE,
 )
 MARKDOWN_FENCE_PATTERN = re.compile(r'^[ \t]{0,3}([`~]{3,})(.*)$')
