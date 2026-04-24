@@ -134,6 +134,21 @@ class StopContinueHookTests(unittest.TestCase):
             self.assertEqual(result.stdout, '')
             self.assertFalse((workspace / '.codex').exists())
 
+    def test_missing_state_ignores_session_payload_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+
+            result = self.run_hook(workspace, {
+                'cwd': str(workspace),
+                'session_id': None,
+                'last_assistant_message': ['not', 'a', 'string'],
+            })
+
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stderr, '')
+            self.assertEqual(result.stdout, '')
+            self.assertFalse((workspace / '.codex').exists())
+
     def test_completion_token_without_status_block_still_records_completion(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)

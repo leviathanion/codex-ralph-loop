@@ -209,6 +209,28 @@ def validated_payload(payload: Any) -> tuple[str, str, str] | None:
     return cwd, session_id, normalized_message
 
 
+def validated_payload_cwd(payload: Any) -> tuple[dict[str, Any], str] | None:
+    if not isinstance(payload, dict):
+        emit_stop(invalid_payload_message('payload must be a JSON object'))
+        return None
+
+    cwd = payload.get('cwd')
+    if not isinstance(cwd, str) or not cwd:
+        emit_stop(invalid_payload_message('cwd must be a non-empty string'))
+        return None
+
+    return payload, cwd
+
+
+def state_needs_session_payload(state_result: StateReadResult) -> bool:
+    if state_result.status != 'ok':
+        return False
+    state = state_result.value
+    if state is None:
+        return False
+    return state['active'] and state['phase'] == 'running'
+
+
 def process_stop_state(
     *,
     state: LoopState,
@@ -467,11 +489,11 @@ def main() -> int:
     except json.JSONDecodeError as exc:
         emit_stop(invalid_payload_message(f'invalid JSON payload: {exc.msg}'))
         return 0
-    validated = validated_payload(payload)
-    if validated is None:
+    validated_cwd = validated_payload_cwd(payload)
+    if validated_cwd is None:
         return 0
 
-    cwd, session_id, last_assistant_message = validated
+    payload, cwd = validated_cwd
     workspace_error = workspace_root_error(workspace_path(cwd))
     if workspace_error is not None:
         emit_stop(storage_error_message(workspace_error))
@@ -480,6 +502,14 @@ def main() -> int:
     initial_exit = state_read_exit_code(initial_state_result)
     if initial_exit is not None:
         return initial_exit
+    if not state_needs_session_payload(initial_state_result):
+        return 0
+
+    validated = validated_payload(payload)
+    if validated is None:
+        return 0
+
+    _, session_id, last_assistant_message = validated
 
     try:
         # Trade-off: probe state.json once without taking Ralph's workspace lock so the

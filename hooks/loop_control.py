@@ -27,6 +27,7 @@ from state_store import (
     default_state,
     read_state,
     save_state,
+    validate_state_payload,
     workspace_lock,
 )
 
@@ -50,6 +51,22 @@ def _validate_workspace_root(cwd: str | None) -> None:
     error = workspace_root_error(workspace_path(cwd))
     if error is not None:
         raise StorageError(error)
+
+
+def _validate_start_request(prompt: str, max_iterations: int, completion_token: str) -> None:
+    if not prompt.strip():
+        raise ValueError('prompt must not be empty')
+
+    candidate_state = default_state()
+    candidate_state.update({
+        'active': True,
+        'prompt': prompt,
+        'max_iterations': max_iterations,
+        'completion_token': completion_token,
+    })
+    errors = validate_state_payload(candidate_state)
+    if errors:
+        raise ValueError('; '.join(errors))
 
 
 def progress_entry(*, iteration: int, status: str, summary: str, reason: str | None = None) -> dict[str, Any]:
@@ -128,8 +145,7 @@ def start_loop(
     max_iterations: int,
     completion_token: str,
 ) -> dict[str, Any]:
-    if not prompt.strip():
-        raise ValueError('prompt must not be empty')
+    _validate_start_request(prompt, max_iterations, completion_token)
 
     _validate_workspace_root(cwd)
     existing_state = read_state(cwd)
@@ -168,8 +184,7 @@ def _start_loop_locked(
     max_iterations: int,
     completion_token: str,
 ) -> dict[str, Any]:
-    if not prompt.strip():
-        raise ValueError('prompt must not be empty')
+    _validate_start_request(prompt, max_iterations, completion_token)
 
     existing_state = read_state(cwd)
     if existing_state.status == 'invalid_json':

@@ -196,6 +196,57 @@ class LoopControlTests(unittest.TestCase):
             self.assertFalse(common.state_path(str(workspace)).exists())
             self.assertFalse(common.progress_path(str(workspace)).exists())
 
+    def test_start_loop_rejects_invalid_max_iterations_without_creating_lock_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+
+            with self.assertRaisesRegex(ValueError, 'max_iterations must be >= 1'):
+                loop_control.start_loop(
+                    cwd=str(workspace),
+                    prompt='Ship the feature',
+                    max_iterations=0,
+                    completion_token='<promise>DONE</promise>',
+                )
+
+            self.assertFalse((workspace / common.LOCK_RELATIVE_PATH).exists())
+            self.assertFalse(common.state_path(str(workspace)).exists())
+            self.assertFalse(common.progress_path(str(workspace)).exists())
+
+    def test_start_loop_rejects_empty_completion_token_without_creating_lock_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+
+            with self.assertRaisesRegex(ValueError, 'completion_token must be a non-empty string'):
+                loop_control.start_loop(
+                    cwd=str(workspace),
+                    prompt='Ship the feature',
+                    max_iterations=3,
+                    completion_token='',
+                )
+
+            self.assertFalse((workspace / common.LOCK_RELATIVE_PATH).exists())
+            self.assertFalse(common.state_path(str(workspace)).exists())
+            self.assertFalse(common.progress_path(str(workspace)).exists())
+
+    def test_start_loop_rejects_unmatchable_completion_token_without_creating_lock_file(self) -> None:
+        invalid_tokens = (' <done/>', '<done/> ', '<done/>\n')
+        for token in invalid_tokens:
+            with self.subTest(token=token):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    workspace = Path(tmpdir)
+
+                    with self.assertRaisesRegex(ValueError, 'single-line string without leading or trailing whitespace'):
+                        loop_control.start_loop(
+                            cwd=str(workspace),
+                            prompt='Ship the feature',
+                            max_iterations=3,
+                            completion_token=token,
+                        )
+
+                    self.assertFalse((workspace / common.LOCK_RELATIVE_PATH).exists())
+                    self.assertFalse(common.state_path(str(workspace)).exists())
+                    self.assertFalse(common.progress_path(str(workspace)).exists())
+
     def test_resume_loop_reclaims_unclaimed_running_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)

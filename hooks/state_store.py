@@ -179,8 +179,13 @@ def validate_state_payload(data: Any) -> list[str]:
         errors.append('max_iterations must be >= 1')
 
     completion_token = data.get('completion_token')
-    if not isinstance(completion_token, str) or not completion_token:
+    if not isinstance(completion_token, str) or not completion_token.strip():
         errors.append('completion_token must be a non-empty string')
+    elif completion_token != completion_token.strip() or len(completion_token.splitlines()) != 1:
+        # Trade-off: Ralph allows custom completion tokens, including internal spaces, but the
+        # Stop hook compares one trimmed final line. Reject surrounding whitespace and line
+        # separators at the schema boundary so users cannot start a loop that can never complete.
+        errors.append('completion_token must be a single-line string without leading or trailing whitespace')
 
     claimed_session_id = data.get('claimed_session_id')
     if claimed_session_id is not None and not isinstance(claimed_session_id, str):
