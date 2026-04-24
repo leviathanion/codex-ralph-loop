@@ -27,6 +27,13 @@ class HeaderInfo:
     is_array: bool
 
 
+@dataclass(frozen=True)
+class AssignmentRange:
+    start: int
+    end: int
+    closed: bool
+
+
 def render_toml_lines(lines: list[str]) -> str:
     return '\n'.join(lines).rstrip() + '\n'
 
@@ -253,35 +260,64 @@ def parse_codex_hooks_assignment(line: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def assignment_range(lines: list[str], start: int) -> AssignmentRange:
+    state = advance_multiline_string_state(lines[start], 'none')
+    if state == 'none':
+        return AssignmentRange(start=start, end=start + 1, closed=True)
+
+    for idx in range(start + 1, len(lines)):
+        state = advance_multiline_string_state(lines[idx], state)
+        if state == 'none':
+            return AssignmentRange(start=start, end=idx + 1, closed=True)
+
+    # Trade-off: do not try to "repair" an unterminated multiline value by deleting everything
+    # to EOF. Mark it unclosed so the section editor leaves the original text intact and lets
+    # TOML validation fail without mutating unrelated lines after a malformed user edit.
+    return AssignmentRange(start=start, end=start + 1, closed=False)
+
+
 def build_updated_section(section_lines: list[str]) -> tuple[list[str], EnsureStatus]:
-    active_indexes: list[int] = []
+    active_ranges: list[AssignmentRange] = []
     for idx, line in iter_lines_outside_multiline_strings(section_lines):
         stripped = line.lstrip()
         if stripped.startswith('#') or stripped.startswith(';'):
             continue
         if ASSIGNMENT_PATTERN.match(strip_inline_comment(line)):
-            active_indexes.append(idx)
+            active_ranges.append(assignment_range(section_lines, idx))
 
     updated_section = list(section_lines)
-    if not active_indexes:
+    if not active_ranges:
         insert_at = len(updated_section)
         while insert_at > 0 and updated_section[insert_at - 1].strip() == '':
             insert_at -= 1
         updated_section.insert(insert_at, 'codex_hooks = true')
         return updated_section, 'updated'
 
-    first = active_indexes[0]
-    first_changed = parse_codex_hooks_assignment(updated_section[first]) is not True
-    if first_changed:
-        # Trade-off: this editor only canonicalizes the line it is actively repairing.
-        updated_section[first] = 'codex_hooks = true'
+    if any(not current_range.closed for current_range in active_ranges):
+        return updated_section, 'unchanged'
 
-    for idx in reversed(active_indexes[1:]):
-        updated_section.pop(idx)
+    first_range = active_ranges[0]
+    first = first_range.start
+    first_changed = parse_codex_hooks_assignment(updated_section[first]) is not True
+
+    updated_section = []
+    cursor = 0
+    for range_index, current_range in enumerate(active_ranges):
+        updated_section.extend(section_lines[cursor:current_range.start])
+        if range_index == 0:
+            if first_changed:
+                # Trade-off: canonicalize only the codex_hooks assignment being repaired. For
+                # multiline string values, replace the whole value range so leftover continuation
+                # lines cannot corrupt the TOML candidate.
+                updated_section.append('codex_hooks = true')
+            else:
+                updated_section.extend(section_lines[current_range.start:current_range.end])
+        cursor = current_range.end
+    updated_section.extend(section_lines[cursor:])
 
     if section_lines == updated_section:
         return updated_section, 'unchanged'
-    if len(active_indexes) > 1 and not first_changed:
+    if len(active_ranges) > 1 and not first_changed:
         return updated_section, 'deduplicated'
     return updated_section, 'updated'
 

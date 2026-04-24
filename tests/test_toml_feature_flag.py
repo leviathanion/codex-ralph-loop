@@ -202,6 +202,40 @@ class TomlFeatureFlagTests(unittest.TestCase):
                 'codex_hooks = true\n',
             )
 
+    def test_ensure_replaces_multiline_codex_hooks_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_toml = Path(tmpdir) / 'config.toml'
+            config_toml.write_text(
+                '[features]\n'
+                'codex_hooks = """\n'
+                'false\n'
+                '"""\n'
+                'other = 1\n',
+                encoding='utf-8',
+            )
+
+            status = toml_feature_flag.ensure_codex_hooks_enabled(config_toml)
+
+            self.assertEqual(status, 'updated')
+            self.assertTrue(toml_feature_flag.codex_hooks_enabled(config_toml))
+            self.assertEqual(
+                config_toml.read_text(encoding='utf-8'),
+                '[features]\n'
+                'codex_hooks = true\n'
+                'other = 1\n',
+            )
+
+    def test_ensure_rejects_unterminated_multiline_codex_hooks_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_toml = Path(tmpdir) / 'config.toml'
+            original = '[features]\ncodex_hooks = """\nfalse\nother = 1\n'
+            config_toml.write_text(original, encoding='utf-8')
+
+            with self.assertRaisesRegex(ValueError, 'invalid TOML'):
+                toml_feature_flag.ensure_codex_hooks_enabled(config_toml)
+
+            self.assertEqual(config_toml.read_text(encoding='utf-8'), original)
+
     def test_codex_hooks_enabled_rejects_invalid_toml(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_toml = Path(tmpdir) / 'config.toml'
