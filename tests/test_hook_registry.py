@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import redirect_stderr
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOKS_DIR = REPO_ROOT / 'hooks'
@@ -276,6 +278,19 @@ class HookRegistryTests(unittest.TestCase):
                 )
             )
             self.assertTrue(hook_registry.stop_hook_registered(saved, 'python3 /tmp/other.py'))
+
+    def test_main_uses_explicit_empty_argv_instead_of_process_arguments(self) -> None:
+        stderr = io.StringIO()
+        original_argv = sys.argv
+        sys.argv = ['hook_registry.py', 'contains', '/tmp/hooks.json', 'python3 /tmp/stop_continue.py']
+        try:
+            with redirect_stderr(stderr):
+                result = hook_registry.main([])
+        finally:
+            sys.argv = original_argv
+
+        self.assertEqual(result, 2)
+        self.assertIn('usage: hook_registry.py', stderr.getvalue())
 
 
 if __name__ == '__main__':

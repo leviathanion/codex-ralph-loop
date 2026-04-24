@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import redirect_stderr
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -294,6 +296,19 @@ class TomlFeatureFlagTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 1)
             self.assertIn('invalid TOML', result.stderr)
+
+    def test_main_uses_explicit_empty_argv_instead_of_process_arguments(self) -> None:
+        stderr = io.StringIO()
+        original_argv = sys.argv
+        sys.argv = ['toml_feature_flag.py', 'get', '/tmp/config.toml']
+        try:
+            with redirect_stderr(stderr):
+                result = toml_feature_flag.main([])
+        finally:
+            sys.argv = original_argv
+
+        self.assertEqual(result, 2)
+        self.assertIn('usage: toml_feature_flag.py', stderr.getvalue())
 
 
 if __name__ == '__main__':

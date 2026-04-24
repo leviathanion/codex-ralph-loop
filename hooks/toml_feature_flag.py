@@ -345,7 +345,7 @@ def ensure_codex_hooks_enabled(path: Path) -> EnsureStatus:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = argv or sys.argv[1:]
+    args = sys.argv[1:] if argv is None else argv
     if len(args) != 2 or args[0] not in {'get', 'ensure'}:
         print('usage: toml_feature_flag.py get|ensure <config.toml>', file=sys.stderr)
         return 2

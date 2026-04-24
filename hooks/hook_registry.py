@@ -364,7 +364,7 @@ def unregister_stop_hook(path: Path, stop_command: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = argv or sys.argv[1:]
+    args = sys.argv[1:] if argv is None else argv
     if len(args) != 3 or args[0] not in {'contains', 'register', 'unregister'}:
         print('usage: hook_registry.py contains|register|unregister <hooks.json> <stop-command>', file=sys.stderr)
         return 2
