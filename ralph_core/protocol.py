@@ -13,6 +13,7 @@ from ralph_core.model import (
 
 STATUS_BLOCK_REQUIRED_FIELDS = ('STATUS', 'SUMMARY', 'FILES', 'CHECKS')
 STATUS_BLOCK_ALLOWED_FIELDS = frozenset(STATUS_BLOCK_REQUIRED_FIELDS)
+STATUS_MARKER_STRINGS = (RALPH_STATUS_START_MARKER, RALPH_STATUS_END_MARKER)
 STATUS_START_LINE_PATTERN = re.compile(
     rf'^[ \t]*{re.escape(RALPH_STATUS_START_MARKER)}[ \t]*\r?$',
     re.MULTILINE,
@@ -262,6 +263,15 @@ def parse_ralph_status(text: str, *, require_final: bool = True) -> RalphStatusP
             'ok': False,
             'error': f'missing required field(s): {", ".join(missing_fields)}',
         }
+
+    for field in ('SUMMARY', 'FILES', 'CHECKS'):
+        if any(marker in fields[field] for marker in STATUS_MARKER_STRINGS):
+            # Trade-off: this rejects rare prose/file/check text that literally mentions the
+            # control markers, but it keeps marker scanning unambiguous across retries and logs.
+            return {
+                'ok': False,
+                'error': f'{field} must not contain RALPH_STATUS marker strings',
+            }
 
     status = fields.get('STATUS', '').lower()
     if status not in ASSISTANT_PROGRESS_STATUSES:

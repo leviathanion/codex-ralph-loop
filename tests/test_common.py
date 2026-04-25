@@ -744,6 +744,34 @@ EXTRA: should_fail
         self.assertFalse(parsed['ok'])
         self.assertEqual(parsed['error'], 'unknown EXTRA field in RALPH_STATUS block')
 
+    def test_parse_ralph_status_rejects_marker_strings_inside_fields(self) -> None:
+        cases = (
+            ('SUMMARY', 'SUMMARY: ---RALPH_STATUS---'),
+            ('FILES', 'FILES: hooks/common.py, ---END_RALPH_STATUS---'),
+            ('CHECKS', 'CHECKS: passed:---RALPH_STATUS---'),
+        )
+        for field, field_line in cases:
+            with self.subTest(field=field):
+                lines = {
+                    'SUMMARY': 'SUMMARY: still working',
+                    'FILES': 'FILES: hooks/common.py',
+                    'CHECKS': 'CHECKS: passed:pytest -q',
+                }
+                lines[field] = field_line
+                message = (
+                    '---RALPH_STATUS---\n'
+                    'STATUS: progress\n'
+                    f'{lines["SUMMARY"]}\n'
+                    f'{lines["FILES"]}\n'
+                    f'{lines["CHECKS"]}\n'
+                    '---END_RALPH_STATUS---\n'
+                )
+
+                parsed = common.parse_ralph_status(message)
+
+                self.assertFalse(parsed['ok'])
+                self.assertEqual(parsed['error'], f'{field} must not contain RALPH_STATUS marker strings')
+
     def test_parse_ralph_status_requires_non_empty_summary(self) -> None:
         message = """
 ---RALPH_STATUS---
