@@ -9,12 +9,11 @@ from pathlib import Path
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HOOKS_DIR = REPO_ROOT / 'hooks'
-sys.path.insert(0, str(HOOKS_DIR))
+sys.path.insert(0, str(REPO_ROOT))
 
-import common  # noqa: E402
-import loop_control  # noqa: E402
-import state_store  # noqa: E402
+from ralph_core import control as loop_control  # noqa: E402
+from ralph_core import storage as state_store  # noqa: E402
+from ralph_test_helpers import common  # noqa: E402
 
 
 class LoopControlTests(unittest.TestCase):
@@ -404,7 +403,7 @@ class LoopControlTests(unittest.TestCase):
             self.assertEqual(entries[-1]['status'], 'resumed')
             self.assertEqual(entries[-1]['reason'], 'session_reclaimed')
 
-    def test_resume_loop_reclaims_legacy_running_state(self) -> None:
+    def test_resume_loop_rejects_legacy_running_state_without_schema_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             state_file = common.state_path(str(workspace))
@@ -420,13 +419,8 @@ class LoopControlTests(unittest.TestCase):
 
             result = loop_control.resume_loop(cwd=str(workspace))
 
-            self.assertEqual(result['status'], 'resumed')
-            restored_state = state_store.read_state(str(workspace))
-            self.assertEqual(restored_state.status, 'ok')
-            assert restored_state.value is not None
-            self.assertEqual(restored_state.value['phase'], 'running')
-            self.assertIsNone(restored_state.value['claimed_session_id'])
-            self.assertEqual(restored_state.value['repeat_count'], 0)
+            self.assertEqual(result['status'], 'invalid_schema')
+            self.assertIn('schema_version must be 1', result['errors'])
 
     def test_resume_loop_resets_repeat_tracking(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

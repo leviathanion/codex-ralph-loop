@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -417,7 +418,7 @@ class InstallAndDoctorTests(unittest.TestCase):
             env = self.make_env(home)
             self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
 
-            hook_path = home / '.codex' / 'hooks' / 'ralph' / 'common.py'
+            hook_path = home / '.codex' / 'hooks' / 'ralph' / 'stop_continue.py'
             external_hook = home / 'external_common.py'
             external_hook.write_bytes(hook_path.read_bytes())
             hook_path.unlink()
@@ -427,6 +428,24 @@ class InstallAndDoctorTests(unittest.TestCase):
             self.assertEqual(doctor.returncode, 1)
             self.assertIn('[FAIL] Hooks:', doctor.stdout)
             self.assertIn('installed hook must be a regular file, not a symlink', doctor.stdout)
+
+    def test_doctor_fails_on_nested_runtime_package_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            env = self.make_env(home)
+            self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
+
+            runtime_module = home / '.codex' / 'hooks' / 'ralph' / 'ralph_core' / 'model.py'
+            external_module = home / 'external_model.py'
+            external_module.write_bytes(runtime_module.read_bytes())
+            runtime_module.unlink()
+            os.symlink(external_module, runtime_module)
+
+            doctor = self.run_script(DOCTOR_SCRIPT, cwd=workspace, env=env)
+            self.assertEqual(doctor.returncode, 1)
+            self.assertIn('[FAIL] Hooks:', doctor.stdout)
+            self.assertIn('runtime package does not match packaged source', doctor.stdout)
 
     def test_doctor_fails_on_invalid_state_and_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
@@ -520,6 +539,34 @@ class InstallAndDoctorTests(unittest.TestCase):
             doctor_after = self.run_script(DOCTOR_SCRIPT, cwd=workspace, env=env)
             self.assertEqual(doctor_after.returncode, 0)
             self.assertIn('[OK] Hook Registry:', doctor_after.stdout)
+
+    def test_doctor_flags_and_install_repairs_missing_stop_hook_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            env = self.make_env(home)
+            self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
+
+            hooks_json_path = home / '.codex' / 'hooks.json'
+            hooks_json = json.loads(hooks_json_path.read_text(encoding='utf-8'))
+            hooks_json['hooks']['Stop'][0]['hooks'][0].pop('timeout')
+            hooks_json_path.write_text(json.dumps(hooks_json, indent=2) + '\n', encoding='utf-8')
+
+            doctor = self.run_script(DOCTOR_SCRIPT, cwd=workspace, env=env)
+
+            self.assertEqual(doctor.returncode, 1)
+            self.assertIn('[FAIL] Hook Registry:', doctor.stdout)
+            self.assertIn('must set timeout = 30', doctor.stdout)
+
+            reinstall = self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
+
+            self.assertEqual(reinstall.returncode, 0)
+            self.assertIn('repaired Stop hook registration', reinstall.stdout)
+            repaired = json.loads(hooks_json_path.read_text(encoding='utf-8'))
+            self.assertEqual(repaired['hooks']['Stop'][0]['hooks'][0]['timeout'], 30)
+
+            doctor_after = self.run_script(DOCTOR_SCRIPT, cwd=workspace, env=env)
+            self.assertEqual(doctor_after.returncode, 0)
 
     def test_doctor_accepts_feature_flag_with_inline_comment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
@@ -880,11 +927,14 @@ class InstallAndDoctorTests(unittest.TestCase):
             target_hooks = home / '.codex' / 'hooks' / 'ralph'
             external_hooks = home / 'external-hooks'
             external_hooks.mkdir(parents=True, exist_ok=True)
-            for hook_name in ('common.py', 'state_store.py', 'stop_continue.py'):
+            for hook_name in ('stop_continue.py',):
                 (external_hooks / hook_name).write_bytes((REPO_ROOT / 'hooks' / hook_name).read_bytes())
 
             for hook_path in target_hooks.iterdir():
-                hook_path.unlink()
+                if hook_path.is_dir() and not hook_path.is_symlink():
+                    shutil.rmtree(hook_path)
+                else:
+                    hook_path.unlink()
             target_hooks.rmdir()
             os.symlink(external_hooks, target_hooks)
 
@@ -1225,24 +1275,28 @@ class InstallAndDoctorTests(unittest.TestCase):
             target_hooks = home / '.codex' / 'hooks' / 'ralph'
             external_hooks = home / 'external-hooks'
             external_hooks.mkdir(parents=True, exist_ok=True)
-            for hook_name in ('common.py', 'state_store.py', 'stop_continue.py'):
+            for hook_name in ('stop_continue.py',):
                 (external_hooks / hook_name).write_bytes((REPO_ROOT / 'hooks' / hook_name).read_bytes())
 
             for hook_path in target_hooks.iterdir():
-                hook_path.unlink()
+                if hook_path.is_dir() and not hook_path.is_symlink():
+                    shutil.rmtree(hook_path)
+                else:
+                    hook_path.unlink()
             target_hooks.rmdir()
             os.symlink(external_hooks, target_hooks)
 
             uninstall = self.run_script(UNINSTALL_SCRIPT, cwd=workspace, env=env, args=['--hooks-only'])
 
             self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
-            self.assertIn('left hook files and registration unchanged', uninstall.stdout)
+            self.assertIn('removed Stop hook registration', uninstall.stdout)
+            self.assertIn('left hook files unchanged', uninstall.stdout)
             self.assertIn('path component is a symlink', uninstall.stdout)
-            for hook_name in ('common.py', 'state_store.py', 'stop_continue.py'):
+            for hook_name in ('stop_continue.py',):
                 self.assertTrue((external_hooks / hook_name).exists())
 
             hooks_json = json.loads((home / '.codex' / 'hooks.json').read_text(encoding='utf-8'))
-            self.assertIn('Stop', hooks_json.get('hooks', {}))
+            self.assertNotIn('Stop', hooks_json.get('hooks', {}))
 
 
 if __name__ == '__main__':

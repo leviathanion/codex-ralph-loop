@@ -11,16 +11,15 @@ from contextlib import redirect_stderr
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HOOKS_DIR = REPO_ROOT / 'hooks'
-sys.path.insert(0, str(HOOKS_DIR))
+sys.path.insert(0, str(REPO_ROOT))
 
-import toml_feature_flag  # noqa: E402
+from profile import toml_feature_flag  # noqa: E402
 
 
 class TomlFeatureFlagTests(unittest.TestCase):
     def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ['python3', str(HOOKS_DIR / 'toml_feature_flag.py'), *args],
+            ['python3', '-m', 'profile.toml_feature_flag', *args],
             cwd=str(REPO_ROOT),
             text=True,
             capture_output=True,
@@ -224,6 +223,40 @@ class TomlFeatureFlagTests(unittest.TestCase):
                 'codex_hooks = true\n'
                 'other = 1\n',
             )
+
+    def test_ensure_replaces_multiline_array_codex_hooks_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_toml = Path(tmpdir) / 'config.toml'
+            config_toml.write_text(
+                '[features]\n'
+                'codex_hooks = [\n'
+                '  false,\n'
+                ']\n'
+                'other = 1\n',
+                encoding='utf-8',
+            )
+
+            status = toml_feature_flag.ensure_codex_hooks_enabled(config_toml)
+
+            self.assertEqual(status, 'updated')
+            self.assertTrue(toml_feature_flag.codex_hooks_enabled(config_toml))
+            self.assertEqual(
+                config_toml.read_text(encoding='utf-8'),
+                '[features]\n'
+                'codex_hooks = true\n'
+                'other = 1\n',
+            )
+
+    def test_ensure_rejects_unterminated_multiline_array_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_toml = Path(tmpdir) / 'config.toml'
+            original = '[features]\ncodex_hooks = [\n  false,\nother = 1\n'
+            config_toml.write_text(original, encoding='utf-8')
+
+            with self.assertRaisesRegex(ValueError, 'invalid TOML'):
+                toml_feature_flag.ensure_codex_hooks_enabled(config_toml)
+
+            self.assertEqual(config_toml.read_text(encoding='utf-8'), original)
 
     def test_ensure_rejects_unterminated_multiline_codex_hooks_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

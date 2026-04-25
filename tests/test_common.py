@@ -2,22 +2,23 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HOOKS_DIR = REPO_ROOT / 'hooks'
-sys.path.insert(0, str(HOOKS_DIR))
+sys.path.insert(0, str(REPO_ROOT))
 
-import common  # noqa: E402
-import state_store  # noqa: E402
+from ralph_core import storage as state_store  # noqa: E402
+from ralph_test_helpers import common  # noqa: E402
 
 
 class CommonModuleTests(unittest.TestCase):
-    def test_read_state_upgrades_legacy_state_shape(self) -> None:
+    def test_read_state_rejects_legacy_state_shape_without_schema_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             state_file = workspace / '.codex' / 'ralph' / 'state.json'
@@ -33,13 +34,8 @@ class CommonModuleTests(unittest.TestCase):
 
             result = state_store.read_state(str(workspace))
 
-            self.assertEqual(result.status, 'ok')
-            assert result.value is not None
-            self.assertEqual(result.value['phase'], 'running')
-            self.assertIsNone(result.value['started_at'])
-            self.assertIsNone(result.value['updated_at'])
-            self.assertIsNone(result.value['last_message_fingerprint'])
-            self.assertEqual(result.value['repeat_count'], 0)
+            self.assertEqual(result.status, 'invalid_schema')
+            self.assertIn('schema_version must be 1', result.errors)
 
     def test_read_state_requires_complete_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -53,6 +49,40 @@ class CommonModuleTests(unittest.TestCase):
             self.assertEqual(result.status, 'invalid_schema')
             self.assertIn('prompt must be a string', result.errors)
             self.assertIn('iteration must be an integer', result.errors)
+
+    def test_read_state_rejects_unknown_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_file = workspace / '.codex' / 'ralph' / 'state.json'
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state = state_store.default_state()
+            state.update({
+                'active': True,
+                'prompt': 'Ship the feature',
+                'started_at': common.now_iso(),
+                'updated_at': common.now_iso(),
+                'future_flag': True,
+            })
+            state_file.write_text(json.dumps(state) + '\n', encoding='utf-8')
+
+            result = state_store.read_state(str(workspace))
+
+            self.assertEqual(result.status, 'invalid_schema')
+            self.assertIn('unknown state field(s): future_flag', result.errors)
+
+    def test_validate_state_payload_reports_non_string_unknown_keys_without_crashing(self) -> None:
+        state = dict(state_store.default_state())
+        state.update({
+            'active': True,
+            'prompt': 'Ship the feature',
+            'started_at': common.now_iso(),
+            'updated_at': common.now_iso(),
+            1: 'bad key',
+        })
+
+        errors = state_store.validate_state_payload(state)
+
+        self.assertIn('unknown state field(s): 1', errors)
 
     def test_read_state_rejects_empty_claimed_session_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -107,6 +137,43 @@ class CommonModuleTests(unittest.TestCase):
 
             self.assertEqual(state_store.read_state(str(workspace)).value, state)
             self.assertGreaterEqual(fsync_mock.call_count, 2)
+
+    def test_workspace_lock_times_out_when_another_process_holds_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            lock_path = workspace / common.LOCK_RELATIVE_PATH
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            holder = subprocess.Popen(
+                [
+                    'python3',
+                    '-c',
+                    (
+                        'import fcntl, sys, time\n'
+                        'path = sys.argv[1]\n'
+                        'handle = open(path, "a+", encoding="utf-8")\n'
+                        'fcntl.flock(handle.fileno(), fcntl.LOCK_EX)\n'
+                        'print("ready", flush=True)\n'
+                        'time.sleep(5)\n'
+                    ),
+                    str(lock_path),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                assert holder.stdout is not None
+                self.assertEqual(holder.stdout.readline().strip(), 'ready')
+
+                started = time.monotonic()
+                with self.assertRaisesRegex(state_store.StorageError, 'timed out waiting for Ralph control lock'):
+                    with state_store.workspace_lock(str(workspace), timeout_seconds=0.05):
+                        pass
+
+                self.assertLess(time.monotonic() - started, 1.0)
+            finally:
+                holder.terminate()
+                holder.communicate(timeout=2)
 
     def test_atomic_write_text_treats_post_replace_directory_fsync_failure_as_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -718,6 +785,42 @@ CHECKS:
         }
         errors = state_store.validate_progress_entry(entry)
         self.assertIn('ts must be a non-empty ISO8601 string', errors)
+
+    def test_validate_progress_entry_rejects_unknown_fields(self) -> None:
+        entry = {
+            'ts': common.now_iso(),
+            'iteration': 0,
+            'session_id': None,
+            'status': 'started',
+            'summary': 'Ralph loop started',
+            'files': [],
+            'checks': [],
+            'message_fingerprint': None,
+            'reason': None,
+            'extra': 'ignored by old runtimes',
+        }
+
+        errors = state_store.validate_progress_entry(entry)
+
+        self.assertIn('unknown progress field(s): extra', errors)
+
+    def test_validate_progress_entry_reports_non_string_unknown_keys_without_crashing(self) -> None:
+        entry = {
+            'ts': common.now_iso(),
+            'iteration': 0,
+            'session_id': None,
+            'status': 'started',
+            'summary': 'Ralph loop started',
+            'files': [],
+            'checks': [],
+            'message_fingerprint': None,
+            'reason': None,
+            1: 'bad key',
+        }
+
+        errors = state_store.validate_progress_entry(entry)
+
+        self.assertIn('unknown progress field(s): 1', errors)
 
     def test_validate_progress_entry_rejects_unknown_status(self) -> None:
         entry = {

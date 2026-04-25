@@ -11,10 +11,9 @@ from contextlib import redirect_stderr
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HOOKS_DIR = REPO_ROOT / 'hooks'
-sys.path.insert(0, str(HOOKS_DIR))
+sys.path.insert(0, str(REPO_ROOT))
 
-import hook_registry  # noqa: E402
+from profile import hook_registry  # noqa: E402
 
 
 class HookRegistryTests(unittest.TestCase):
@@ -36,6 +35,10 @@ class HookRegistryTests(unittest.TestCase):
             self.assertEqual(status, 'added')
             saved = json.loads(hooks_json.read_text(encoding='utf-8'))
             self.assertTrue(hook_registry.stop_hook_registered(saved, 'python3 /tmp/stop_continue.py'))
+            self.assertEqual(
+                saved['hooks']['Stop'][0]['hooks'][0]['timeout'],
+                hook_registry.STOP_HOOK_TIMEOUT_SECONDS,
+            )
 
     def test_register_stop_hook_treats_empty_object_as_empty_registry(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -47,6 +50,10 @@ class HookRegistryTests(unittest.TestCase):
             self.assertEqual(status, 'added')
             saved = json.loads(hooks_json.read_text(encoding='utf-8'))
             self.assertTrue(hook_registry.stop_hook_registered(saved, 'python3 /tmp/stop_continue.py'))
+            self.assertEqual(
+                saved['hooks']['Stop'][0]['hooks'][0]['timeout'],
+                hook_registry.STOP_HOOK_TIMEOUT_SECONDS,
+            )
 
     def test_register_stop_hook_reports_ok_read_without_registry_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -98,7 +105,8 @@ class HookRegistryTests(unittest.TestCase):
             hooks_json = Path(tmpdir) / 'hooks.json'
             original = (
                 '{\n'
-                '  "hooks": {"Stop": [{"hooks": [{"command": "python3 /tmp/caf\\u00e9.py", "type": "command"}]}]}\n'
+                '  "hooks": {"Stop": [{"hooks": [{"command": "python3 /tmp/caf\\u00e9.py", '
+                '"type": "command", "timeout": 30}]}]}\n'
                 '}\n'
             )
             hooks_json.write_text(original, encoding='utf-8')
@@ -117,7 +125,7 @@ class HookRegistryTests(unittest.TestCase):
                 '    "Stop": [\n'
                 '      {\n'
                 '        "hooks": [\n'
-                '          {"type": "command", "command": "python3 /tmp/.codex//hooks/ralph/stop_continue.py"}\n'
+                '          {"type": "command", "command": "python3 /tmp/.codex//hooks/ralph/stop_continue.py", "timeout": 30}\n'
                 '        ]\n'
                 '      }\n'
                 '    ]\n'
@@ -133,6 +141,57 @@ class HookRegistryTests(unittest.TestCase):
 
             self.assertEqual(status, 'unchanged')
             self.assertEqual(hooks_json.read_text(encoding='utf-8'), original)
+
+    def test_register_stop_hook_treats_absolute_python3_as_equivalent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hooks_json = Path(tmpdir) / 'hooks.json'
+            original = json.dumps({
+                'hooks': {
+                    'Stop': [
+                        {
+                            'hooks': [
+                                {
+                                    'type': 'command',
+                                    'command': '/usr/bin/python3 /tmp/stop_continue.py',
+                                    'timeout': hook_registry.STOP_HOOK_TIMEOUT_SECONDS,
+                                },
+                            ],
+                        },
+                    ],
+                },
+            }, indent=2) + '\n'
+            hooks_json.write_text(original, encoding='utf-8')
+
+            status = hook_registry.register_stop_hook(hooks_json, 'python3 /tmp/stop_continue.py')
+
+            self.assertEqual(status, 'unchanged')
+            self.assertEqual(hooks_json.read_text(encoding='utf-8'), original)
+
+    def test_register_stop_hook_repairs_missing_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hooks_json = Path(tmpdir) / 'hooks.json'
+            hooks_json.write_text(json.dumps({
+                'hooks': {
+                    'Stop': [
+                        {
+                            'hooks': [
+                                {'type': 'command', 'command': 'python3 /tmp/stop_continue.py'},
+                            ],
+                        },
+                    ],
+                },
+            }) + '\n', encoding='utf-8')
+
+            status = hook_registry.register_stop_hook(hooks_json, 'python3 /tmp/stop_continue.py')
+
+            self.assertEqual(status, 'updated')
+            saved = json.loads(hooks_json.read_text(encoding='utf-8'))
+            self.assertTrue(hook_registry.stop_hook_registered(
+                saved,
+                'python3 /tmp/stop_continue.py',
+                require_shell_safe=True,
+                require_bounded_timeout=True,
+            ))
 
     def test_unregister_stop_hook_removes_equivalent_path_spelling(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

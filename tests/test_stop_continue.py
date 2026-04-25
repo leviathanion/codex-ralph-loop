@@ -12,11 +12,13 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOKS_DIR = REPO_ROOT / 'hooks'
+sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(HOOKS_DIR))
 
-import common  # noqa: E402
-import state_store  # noqa: E402
 import stop_continue  # noqa: E402
+from ralph_core import effects, reducer, runtime  # noqa: E402
+from ralph_core import storage as state_store  # noqa: E402
+from ralph_test_helpers import common  # noqa: E402
 
 STOP_SCRIPT = HOOKS_DIR / 'stop_continue.py'
 
@@ -62,7 +64,7 @@ class StopContinueHookTests(unittest.TestCase):
             workspace = Path(tmpdir)
 
             with self.assertRaisesRegex(state_store.StorageError, 'internal state read returned no payload'):
-                stop_continue.state_value_or_storage_error(
+                runtime.state_value_or_storage_error(
                     state_store.StateReadResult(status='ok'),
                     str(workspace),
                 )
@@ -79,18 +81,20 @@ class StopContinueHookTests(unittest.TestCase):
                 from pathlib import Path
 
                 root = Path(sys.argv[1])
+                sys.path.insert(0, str(root))
                 sys.path.insert(0, str(root / 'hooks'))
 
+                from ralph_core import storage
                 import stop_continue
 
-                original_read_state = stop_continue.read_state
+                original_read_state = storage.read_state
 
                 def delayed_read_state(cwd=None):
                     result = original_read_state(cwd)
                     time.sleep({delay_seconds!r})
                     return result
 
-                stop_continue.read_state = delayed_read_state
+                storage.read_state = delayed_read_state
                 payload = json.loads(sys.argv[2])
                 sys.stdin = io.StringIO(json.dumps(payload))
                 raise SystemExit(stop_continue.main())
@@ -158,6 +162,25 @@ class StopContinueHookTests(unittest.TestCase):
             self.assertEqual(result.stderr, '')
             self.assertEqual(result.stdout, '')
             self.assertFalse((workspace / '.codex').exists())
+
+    def test_missing_state_is_noop_when_unrelated_dot_codex_is_symlinked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / 'workspace'
+            workspace.mkdir()
+            external_codex = Path(tmpdir) / 'external-codex'
+            external_codex.mkdir()
+            os.symlink(external_codex, workspace / '.codex')
+
+            result = self.run_hook(workspace, {
+                'cwd': str(workspace),
+                'session_id': None,
+                'last_assistant_message': ['not', 'validated'],
+            })
+
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stderr, '')
+            self.assertEqual(result.stdout, '')
+            self.assertFalse((external_codex / 'ralph').exists())
 
     def test_completion_token_without_status_block_still_records_completion(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -431,7 +454,7 @@ class StopContinueHookTests(unittest.TestCase):
             self.assertEqual(entries[-1]['status'], 'stopped')
             self.assertEqual(entries[-1]['reason'], 'invalid_status_block')
 
-    def test_legacy_state_shape_continues_and_is_upgraded_on_write(self) -> None:
+    def test_legacy_state_shape_stops_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             state_file = common.state_path(str(workspace))
@@ -459,11 +482,9 @@ class StopContinueHookTests(unittest.TestCase):
             })
 
             response = json.loads(result.stdout)
-            self.assertEqual(response['decision'], 'block')
-            state = self.read_state(workspace)
-            self.assertEqual(state['iteration'], 1)
-            self.assertEqual(state['phase'], 'running')
-            self.assertEqual(state['repeat_count'], 1)
+            self.assertIn('Ralph state is invalid.', response['systemMessage'])
+            self.assertIn('schema_version must be 1', response['systemMessage'])
+            self.assertEqual(self.read_progress(workspace), [])
 
     def test_completion_token_conflicting_with_noncomplete_status_pauses_loop(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -993,22 +1014,23 @@ class StopContinueHookTests(unittest.TestCase):
                 'checks': ['failed:waiting for user input'],
             }
 
+            decision = reducer.pause_loop_with_reason(
+                state=make_state(),
+                iteration=1,
+                session_id='session-1',
+                message_fingerprint='sha256:test',
+                details=details,
+                reason='invalid_status_block',
+                message='stop here',
+            )
+
             with mock.patch.object(
-                stop_continue,
+                state_store,
                 'save_state',
                 side_effect=state_store.StorageError('boom'),
-            ) as save_mock, mock.patch.object(stop_continue, 'append_progress_entry') as append_mock:
+            ) as save_mock, mock.patch.object(state_store, 'append_progress_entry') as append_mock:
                 with self.assertRaises(state_store.StorageError):
-                    stop_continue.pause_loop_with_reason(
-                        state=make_state(),
-                        cwd=str(workspace),
-                        iteration=1,
-                        session_id='session-1',
-                        message_fingerprint='sha256:test',
-                        details=details,
-                        reason='invalid_status_block',
-                        message='stop here',
-                    )
+                    effects.apply_effects(decision.effects, str(workspace))
 
             save_mock.assert_called_once()
             append_mock.assert_not_called()
