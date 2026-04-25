@@ -214,7 +214,20 @@ def fsync_file(path: Path) -> None:
         os.fsync(handle.fileno())
 
 
+def validate_source_file(source: Path) -> None:
+    # Trade-off: hook files are executable profile code. Refuse source symlinks and special
+    # files just like runtime package trees so install never follows a package-local redirect
+    # into unrelated filesystem content.
+    if source.is_symlink():
+        raise ValueError(f'source file contains unsupported symlink: {source}')
+    if not source.exists():
+        raise ValueError(f'missing source file: {source}')
+    if not source.is_file():
+        raise ValueError(f'source path is not a regular file: {source}')
+
+
 def copy_file_atomic(source: Path, destination: Path) -> None:
+    validate_source_file(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         dir=str(destination.parent),

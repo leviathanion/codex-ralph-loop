@@ -67,6 +67,34 @@ class ProfileInstallerTests(unittest.TestCase):
 
             self.assertEqual(destination.read_text(encoding='utf-8'), 'payload\n')
 
+    def test_copy_file_atomic_rejects_source_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            external = root / 'external.txt'
+            source = root / 'source.txt'
+            destination = root / 'destination.txt'
+            external.write_text('payload\n', encoding='utf-8')
+            os.symlink(external, source)
+
+            with self.assertRaisesRegex(ValueError, 'unsupported symlink'):
+                profile_installer.copy_file_atomic(source, destination)
+
+            self.assertFalse(destination.exists())
+
+    @unittest.skipUnless(hasattr(socket, 'AF_UNIX'), 'Unix-domain sockets are required')
+    def test_copy_file_atomic_rejects_special_source_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / 'profile.sock'
+            destination = root / 'destination.txt'
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(source))
+
+                with self.assertRaisesRegex(ValueError, 'regular file'):
+                    profile_installer.copy_file_atomic(source, destination)
+
+            self.assertFalse(destination.exists())
+
     def test_copy_directory_treats_directory_fsync_failure_as_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
