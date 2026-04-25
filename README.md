@@ -52,8 +52,8 @@ Runtime behavior is split cleanly:
 
 ## Python dependency
 
-Ralph uses Python's standard `tomllib` on Python 3.11 and newer. On Python 3.10 and older,
-install the declared fallback dependency first:
+Ralph requires Python 3.10 or newer. It uses Python's standard `tomllib` on Python 3.11
+and newer. On Python 3.10, install the declared fallback dependency first:
 
 ```bash
 python3 -m pip install -r requirements.txt
