@@ -482,6 +482,8 @@ CHECKS: passed:first; failed:second
 
         self.assertTrue(common.completion_token_emitted(f'wrapped up\n{token}\n', token))
         self.assertFalse(common.completion_token_emitted(f'wrapped up {token}', token))
+        self.assertFalse(common.completion_token_emitted(f'Example token:\n    {token}', token))
+        self.assertFalse(common.completion_token_emitted(f'```text\n{token}', token))
 
     def test_completion_token_ignores_earlier_mentions(self) -> None:
         token = common.DEFAULT_COMPLETION_TOKEN

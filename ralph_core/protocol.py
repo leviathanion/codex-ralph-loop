@@ -55,15 +55,21 @@ def completion_token_emitted(text: str, token: str) -> bool:
     stripped = text.rstrip()
     if not stripped:
         return False
-    last_line = stripped.splitlines()[-1].strip()
-    return last_line == token
+    original_lines = stripped.splitlines()
+    masked_lines = mask_markdown_code_blocks(stripped, mask_unclosed_fences=True).splitlines()
+    if not original_lines or not masked_lines:
+        return False
+    # Trade-off: completion clears Ralph state, so be stricter than status-marker scans:
+    # a token used as a Markdown code example, including an unterminated fenced example, is
+    # not treated as the user's explicit "task is done" control signal.
+    return original_lines[-1].strip() == token and masked_lines[-1].strip() == token
 
 
 def _mask_line_contents(line: str) -> str:
     return ''.join(char if char in '\r\n' else ' ' for char in line)
 
 
-def mask_markdown_fenced_code_blocks(text: str) -> str:
+def mask_markdown_fenced_code_blocks(text: str, *, mask_unclosed: bool = False) -> str:
     # Trade-off: Ralph treats raw status markers as control syntax, but completed turns may also
     # document the protocol. Mask fenced code blocks before marker scans so markdown examples do
     # not participate in Stop-hook control flow while preserving character offsets for later slices.
@@ -106,7 +112,9 @@ def mask_markdown_fenced_code_blocks(text: str) -> str:
         pending_fence_lines = None
         active_fence = None
 
-    if pending_fence_lines is not None:
+    if pending_fence_lines is not None and mask_unclosed:
+        masked_lines.extend(_mask_line_contents(line) for line in pending_fence_lines)
+    elif pending_fence_lines is not None:
         masked_lines.extend(pending_fence_lines)
 
     return ''.join(masked_lines)
@@ -137,8 +145,10 @@ def mask_markdown_indented_code_blocks(text: str) -> str:
     return ''.join(masked_lines)
 
 
-def mask_markdown_code_blocks(text: str) -> str:
-    return mask_markdown_indented_code_blocks(mask_markdown_fenced_code_blocks(text))
+def mask_markdown_code_blocks(text: str, *, mask_unclosed_fences: bool = False) -> str:
+    return mask_markdown_indented_code_blocks(
+        mask_markdown_fenced_code_blocks(text, mask_unclosed=mask_unclosed_fences)
+    )
 
 
 def contains_ralph_status_markup(text: str) -> bool:

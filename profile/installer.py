@@ -93,6 +93,14 @@ class InstallTransaction:
         elif path.exists():
             backup_path = self._backup_root / f'snapshot_{len(self._snapshot_order)}'
             if path.is_dir():
+                special_files = directory_tree_special_file_errors(path)
+                if special_files:
+                    details = ', '.join(special_files)
+                    # Trade-off: snapshot rollback intentionally preserves nested symlinks, but
+                    # refuses sockets/FIFOs/devices before shutil.copytree can block on them.
+                    raise ValueError(
+                        f'unsupported special file(s) inside directory snapshot {path}: {details}'
+                    )
                 shutil.copytree(path, backup_path, symlinks=True)
                 snapshot = Snapshot(path=path, kind='directory', backup_path=backup_path)
             elif path.is_file():
@@ -295,6 +303,17 @@ def directory_tree_symlink_errors(root: Path) -> list[str]:
             errors.append(str(path.relative_to(root)))
             continue
         if '__pycache__' in path.parts or path.suffix == '.pyc':
+            continue
+        if path.is_dir() or path.is_file():
+            continue
+        errors.append(str(path.relative_to(root)))
+    return errors
+
+
+def directory_tree_special_file_errors(root: Path) -> list[str]:
+    errors: list[str] = []
+    for path in root.rglob('*'):
+        if path.is_symlink():
             continue
         if path.is_dir() or path.is_file():
             continue

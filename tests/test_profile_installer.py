@@ -163,6 +163,20 @@ class ProfileInstallerTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'unsupported special file'):
                         transaction.snapshot_path(socket_path)
 
+    @unittest.skipUnless(hasattr(os, 'mkfifo'), 'FIFO files are required')
+    def test_snapshot_path_rejects_special_file_inside_directory_without_copying(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / 'target'
+            target.mkdir()
+            fifo_path = target / 'runtime.fifo'
+            os.mkfifo(fifo_path)
+
+            with profile_installer.InstallTransaction() as transaction:
+                with self.assertRaisesRegex(ValueError, 'unsupported special file\\(s\\) inside directory snapshot'):
+                    transaction.snapshot_path(target)
+
+            self.assertTrue(fifo_path.exists())
+
     @unittest.skipUnless(hasattr(socket, 'AF_UNIX'), 'Unix-domain sockets are required')
     def test_remove_path_unlinks_special_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
