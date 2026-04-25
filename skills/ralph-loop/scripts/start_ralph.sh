@@ -30,4 +30,4 @@ while [[ "$#" -gt 0 ]]; do
   esac
 done
 
-python3 "${ROOT_DIR}/hooks/loop_control.py" start --cwd "${PWD}" "${FORWARDED_ARGS[@]}"
+PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m ralph_core.control start --cwd "${PWD}" "${FORWARDED_ARGS[@]}"

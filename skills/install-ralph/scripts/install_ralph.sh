@@ -26,7 +26,7 @@ for arg in "$@"; do
   esac
 done
 
-exec python3 "${ROOT_DIR}/hooks/profile_installer.py" install \
+exec env PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m profile.installer install \
   --root-dir "${ROOT_DIR}" \
   --codex-home "${CODEX_HOME}" \
   --agents-home "${AGENTS_HOME}" \

@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 
-_ralph_manifest_shell="$(python3 - "${ROOT_DIR}" <<'PY'
+_ralph_manifest_shell="$(PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 - "${ROOT_DIR}" <<'PY'
 import shlex
 import sys
-from pathlib import Path
 
-root_dir = Path(sys.argv[1])
-sys.path.insert(0, str(root_dir / 'hooks'))
-
-from package_manifest import HOOK_NAMES, SKILL_NAMES, STOP_HOOK_FILE
+from profile.package_manifest import RUNTIME_PACKAGE_DIRS, SKILL_NAMES, STOP_HOOK_FILE, STOP_HOOK_FILES
 
 
 def emit_array(name: str, values) -> None:
@@ -17,10 +13,11 @@ def emit_array(name: str, values) -> None:
 
 
 emit_array('RALPH_SKILL_NAMES', SKILL_NAMES)
-emit_array('RALPH_HOOK_NAMES', HOOK_NAMES)
+emit_array('RALPH_STOP_HOOK_FILES', STOP_HOOK_FILES)
+emit_array('RALPH_RUNTIME_PACKAGE_DIRS', RUNTIME_PACKAGE_DIRS)
 print(f'RALPH_STOP_HOOK_FILE={shlex.quote(STOP_HOOK_FILE)}')
 PY
-)" || { echo "failed to load Ralph manifest from ${ROOT_DIR}/hooks/package_manifest.py" >&2; exit 1; }
+)" || { echo "failed to load Ralph manifest from ${ROOT_DIR}/profile/package_manifest.py" >&2; exit 1; }
 eval "${_ralph_manifest_shell}"
 unset _ralph_manifest_shell
 
@@ -64,7 +61,7 @@ ralph_register_stop_hook() {
   local stop_hook_script="$2"
   local stop_command
   stop_command="$(ralph_stop_hook_command "${stop_hook_script}")"
-  python3 "${ROOT_DIR}/hooks/hook_registry.py" register "${hooks_json}" "${stop_command}"
+  PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m profile.hook_registry register "${hooks_json}" "${stop_command}"
 }
 
 ralph_unregister_stop_hook() {
@@ -72,5 +69,5 @@ ralph_unregister_stop_hook() {
   local stop_hook_script="$2"
   local stop_command
   stop_command="$(ralph_stop_hook_command "${stop_hook_script}")"
-  python3 "${ROOT_DIR}/hooks/hook_registry.py" unregister "${hooks_json}" "${stop_command}"
+  PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m profile.hook_registry unregister "${hooks_json}" "${stop_command}"
 }

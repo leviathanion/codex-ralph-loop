@@ -9,4 +9,4 @@ if [[ "$#" -ne 0 ]]; then
   exit 2
 fi
 
-python3 "${ROOT_DIR}/hooks/loop_control.py" resume --cwd "${PWD}"
+PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m ralph_core.control resume --cwd "${PWD}"

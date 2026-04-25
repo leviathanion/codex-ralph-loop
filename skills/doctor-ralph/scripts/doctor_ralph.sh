@@ -16,4 +16,4 @@ fi
 
 WORKSPACE_ROOT="${1:-${PWD}}"
 
-python3 "${ROOT_DIR}/hooks/doctor.py" "${WORKSPACE_ROOT}" "${CODEX_HOME}" "${AGENTS_HOME}"
+PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m profile.doctor "${WORKSPACE_ROOT}" "${CODEX_HOME}" "${AGENTS_HOME}"
