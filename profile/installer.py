@@ -95,9 +95,14 @@ class InstallTransaction:
             if path.is_dir():
                 shutil.copytree(path, backup_path, symlinks=True)
                 snapshot = Snapshot(path=path, kind='directory', backup_path=backup_path)
-            else:
+            elif path.is_file():
                 shutil.copy2(path, backup_path)
                 snapshot = Snapshot(path=path, kind='file', backup_path=backup_path)
+            else:
+                # Trade-off: profile paths should contain regular files, directories, or
+                # symlinks. Refuse device/socket/FIFO nodes instead of trying to back them up;
+                # copying a FIFO can block the installer indefinitely.
+                raise ValueError(f'unsupported special file at {path}')
         else:
             snapshot = Snapshot(path=path, kind='missing')
 
@@ -190,11 +195,14 @@ class InstallTransaction:
 
     @staticmethod
     def _remove_path(path: Path) -> None:
-        if path.is_symlink() or path.is_file():
+        if path.is_symlink():
             path.unlink(missing_ok=True)
             return
-        if path.exists():
+        if path.is_dir():
             shutil.rmtree(path)
+            return
+        if path.exists():
+            path.unlink(missing_ok=True)
 
 
 def normalize_path(path: str | Path) -> Path:
@@ -256,8 +264,12 @@ def iter_directory_files(root: Path) -> list[Path]:
             raise OSError(f'unexpected symlink in directory tree: {path}')
         if '__pycache__' in path.parts or path.suffix == '.pyc':
             continue
+        if path.is_dir():
+            continue
         if path.is_file():
             files.append(path.relative_to(root))
+            continue
+        raise OSError(f'unexpected special file in directory tree: {path}')
     return sorted(files)
 
 
@@ -271,6 +283,9 @@ def directory_tree_symlink_errors(root: Path) -> list[str]:
             continue
         if '__pycache__' in path.parts or path.suffix == '.pyc':
             continue
+        if path.is_dir() or path.is_file():
+            continue
+        errors.append(str(path.relative_to(root)))
     return errors
 
 
@@ -288,15 +303,13 @@ def directories_match(source: Path, destination: Path) -> bool:
 
 
 def copy_directory(source: Path, destination: Path) -> None:
-    source_symlinks = directory_tree_symlink_errors(source)
-    if source_symlinks:
-        details = ', '.join(source_symlinks)
-        raise ValueError(f'source directory contains unsupported symlink(s): {details}')
+    source_errors = directory_tree_symlink_errors(source)
+    if source_errors:
+        details = ', '.join(source_errors)
+        raise ValueError(f'source directory contains unsupported symlink or special file(s): {details}')
 
-    if destination.is_symlink() or destination.is_file():
-        destination.unlink()
-    elif destination.exists():
-        shutil.rmtree(destination)
+    if destination.exists() or destination.is_symlink():
+        InstallTransaction._remove_path(destination)
     shutil.copytree(
         source,
         destination,

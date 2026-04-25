@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import io
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -108,6 +109,56 @@ class ProfileInstallerTests(unittest.TestCase):
                 profile_installer.copy_directory(source, destination)
 
             self.assertFalse(destination.exists())
+
+    @unittest.skipUnless(hasattr(socket, 'AF_UNIX'), 'Unix-domain sockets are required')
+    def test_copy_directory_rejects_special_source_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / 'source'
+            destination = root / 'destination'
+            source.mkdir()
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(source / 'profile.sock'))
+
+                with self.assertRaisesRegex(ValueError, 'unsupported symlink or special file'):
+                    profile_installer.copy_directory(source, destination)
+
+            self.assertFalse(destination.exists())
+
+    @unittest.skipUnless(hasattr(socket, 'AF_UNIX'), 'Unix-domain sockets are required')
+    def test_snapshot_path_rejects_special_file_without_copying(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            socket_path = Path(tmpdir) / 'profile.sock'
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(socket_path))
+                with profile_installer.InstallTransaction() as transaction:
+                    with self.assertRaisesRegex(ValueError, 'unsupported special file'):
+                        transaction.snapshot_path(socket_path)
+
+    @unittest.skipUnless(hasattr(socket, 'AF_UNIX'), 'Unix-domain sockets are required')
+    def test_remove_path_unlinks_special_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            socket_path = Path(tmpdir) / 'profile.sock'
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(socket_path))
+                profile_installer.InstallTransaction._remove_path(socket_path)
+
+            self.assertFalse(socket_path.exists())
+
+    @unittest.skipUnless(hasattr(socket, 'AF_UNIX'), 'Unix-domain sockets are required')
+    def test_directories_match_rejects_special_destination_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / 'source'
+            destination = root / 'destination'
+            source.mkdir()
+            destination.mkdir()
+            (source / 'module.py').write_text('payload\n', encoding='utf-8')
+            (destination / 'module.py').write_text('payload\n', encoding='utf-8')
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(destination / 'profile.sock'))
+
+                self.assertFalse(profile_installer.directories_match(source, destination))
 
     def test_directories_match_rejects_nested_symlinked_runtime_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
