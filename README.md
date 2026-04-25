@@ -1,6 +1,7 @@
 # Codex Ralph
 
-Direct Codex Ralph package built from seven skills, three installed runtime hooks, and package-local installer helpers.
+Direct Codex Ralph package built from seven skills, one installed Stop-hook adapter,
+host-agnostic runtime core, and package-local profile tooling.
 
 By default it installs into:
 
@@ -18,19 +19,17 @@ Installed directly by `$install-ralph`:
 - `skills/ralph-help`
 - `skills/cancel-ralph`
 - `skills/doctor-ralph`
-- `hooks/common.py`
-- `hooks/state_store.py`
 - `hooks/stop_continue.py`
+- `ralph_core/`
 - Ralph `Stop` hook registration merged into `$CODEX_HOME/hooks.json`
 
-Packaged under `hooks/` for install/doctor support, but not copied into `$CODEX_HOME/hooks/ralph`:
+Packaged for install/doctor support, but not copied into `$CODEX_HOME/hooks/ralph`:
 
-- `hooks/doctor.py`
-- `hooks/hook_registry.py`
-- `hooks/loop_control.py`
-- `hooks/package_manifest.py`
-- `hooks/profile_installer.py`
-- `hooks/toml_feature_flag.py`
+- `profile/doctor.py`
+- `profile/hook_registry.py`
+- `profile/installer.py`
+- `profile/package_manifest.py`
+- `profile/toml_feature_flag.py`
 - `hooks/hooks.json` (packaged registry example)
 
 ## Official Codex model
@@ -96,7 +95,7 @@ After that, restart Codex and use `$install-ralph` or `$uninstall-ralph`.
 ## Packaging notes
 
 - This package installs the seven skills directly into `$AGENTS_HOME/skills`.
-- The skill-local `scripts/` directories are the user-facing entrypoints; profile install/uninstall mutations are implemented in `hooks/profile_installer.py`.
+- The skill-local `scripts/` directories are the user-facing entrypoints; profile install/uninstall mutations are implemented in `profile/installer.py`.
 - Workspace-local Ralph state changes are funneled through packaged scripts so the skills do not hand-write JSON blobs.
 - Install and uninstall are transaction-safe for one caller, but they are not designed to be run concurrently. Do not run multiple `$install-ralph`/`$uninstall-ralph` commands in parallel against the same profile.
 
@@ -104,7 +103,8 @@ After that, restart Codex and use `$install-ralph` or `$uninstall-ralph`.
 
 - Active control state: `.codex/ralph/state.json`
 - Append-only progress ledger: `.codex/ralph/progress.jsonl`
-- Ralph validates state, progress, and hook registry files strictly. Malformed files stop the loop or fail `$doctor-ralph`; they are never auto-repaired by silently filling defaults.
+- State files must use `schema_version = 1`.
+- Ralph validates state, progress, and hook registry files strictly. Malformed or old-schema files stop the loop or fail `$doctor-ralph`; they are never auto-repaired by silently filling defaults.
 
 Recoverable stops keep `.codex/ralph/state.json` in place and set `phase` to `blocked`.
 Use `$continue-ralph-loop` to resume that paused loop explicitly.

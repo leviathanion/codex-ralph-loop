@@ -5,7 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.codex/hooks/ralph/stop_continue.py"
+            "command": "python3 ~/.codex/hooks/ralph/stop_continue.py",
+            "timeout": 30
           }
         ]
       }
