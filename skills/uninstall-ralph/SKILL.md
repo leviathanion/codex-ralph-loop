@@ -8,7 +8,6 @@ description: Uninstall Codex Ralph from the current user profile by removing Ral
 Uninstall Codex Ralph from this user profile.
 
 This removes Ralph-managed skill links, copied hooks, and Stop-hook registration.
-It does not disable the shared `codex_hooks` flag in `~/.codex/config.toml`.
 
 ## Required behavior
 

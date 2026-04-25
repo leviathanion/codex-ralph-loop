@@ -22,7 +22,6 @@ from .hook_registry import (
 )
 from .installer import directories_match
 from .package_manifest import RUNTIME_PACKAGE_DIRS, SKILL_NAMES, STOP_HOOK_FILES
-from .toml_feature_flag import codex_hooks_enabled
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -204,19 +203,6 @@ def main(argv: list[str] | None = None) -> int:
                     'Hook Registry',
                     'Ralph Stop hook exists but the command is malformed and will not survive shell parsing',
                 )
-
-    config_toml = codex_home / 'config.toml'
-    try:
-        hooks_enabled = codex_hooks_enabled(config_toml)
-    except (OSError, UnicodeDecodeError) as exc:
-        add_check(checks, 'FAIL', 'Config', f'unable to read {config_toml}: {exc}')
-    except ValueError as exc:
-        add_check(checks, 'FAIL', 'Config', str(exc))
-    else:
-        if hooks_enabled:
-            add_check(checks, 'OK', 'Config', 'codex_hooks = true is enabled')
-        else:
-            add_check(checks, 'FAIL', 'Config', f'codex_hooks = true is missing from {config_toml}')
 
     workspace_root_errors = validate_workspace_root(workspace_root)
     if workspace_root_errors:

@@ -1,6 +1,6 @@
 ---
 name: install-ralph
-description: Install Codex Ralph into the current user profile by linking Ralph skills into `~/.agents/skills/`, copying hooks into `~/.codex/hooks/ralph/`, and enabling `codex_hooks`. Use when the user asks to install, bootstrap, relink, or repair the Ralph package.
+description: Install Codex Ralph into the current user profile by linking Ralph skills into `~/.agents/skills/`, copying hooks into `~/.codex/hooks/ralph/`, and registering the Stop hook. Use when the user asks to install, bootstrap, relink, or repair the Ralph package.
 ---
 
 # Install Ralph

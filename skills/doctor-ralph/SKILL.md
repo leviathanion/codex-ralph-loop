@@ -17,6 +17,5 @@ Run the Codex Ralph doctor for the current user profile and workspace.
    - installed skill links
    - installed hook files
    - Stop hook registration
-   - `codex_hooks = true`
    - workspace `.codex/ralph/` write access
    - `state.json` and `progress.jsonl` validity when present

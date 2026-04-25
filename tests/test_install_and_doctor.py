@@ -163,25 +163,6 @@ class InstallAndDoctorTests(unittest.TestCase):
             self.assertEqual(hooks_json.read_text(encoding='utf-8'), original)
             self.assertFalse((home / '.agents' / 'skills' / 'ralph-loop').exists())
             self.assertFalse((home / '.codex' / 'hooks' / 'ralph' / 'stop_continue.py').exists())
-            self.assertFalse((home / '.codex' / 'config.toml').exists())
-
-    def test_install_rolls_back_when_config_toml_is_unrepairable(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
-            home = Path(tmp_home)
-            workspace = Path(tmp_workspace)
-            env = self.make_env(home)
-            config_toml = home / '.codex' / 'config.toml'
-            config_toml.parent.mkdir(parents=True, exist_ok=True)
-            original = '[features\ncodex_hooks = true\n'
-            config_toml.write_text(original, encoding='utf-8')
-
-            install = self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
-
-            self.assertEqual(install.returncode, 1)
-            self.assertEqual(config_toml.read_text(encoding='utf-8'), original)
-            self.assertFalse((home / '.agents' / 'skills' / 'ralph-loop').exists())
-            self.assertFalse((home / '.codex' / 'hooks' / 'ralph' / 'stop_continue.py').exists())
-            self.assertFalse((home / '.codex' / 'hooks.json').exists())
 
     def test_path_spelling_changes_do_not_duplicate_or_hide_stop_hook(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
@@ -288,24 +269,6 @@ class InstallAndDoctorTests(unittest.TestCase):
             self.assertFalse((workspace / '.codex-relative').exists())
             self.assertFalse((workspace / '.agents-relative').exists())
 
-    def test_uninstall_leaves_shared_codex_hooks_flag_enabled_and_reports_it(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
-            home = Path(tmp_home)
-            workspace = Path(tmp_workspace)
-            env = self.make_env(home)
-
-            install = self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
-            self.assertEqual(install.returncode, 0, install.stderr)
-
-            config_toml = home / '.codex' / 'config.toml'
-            original_config = config_toml.read_text(encoding='utf-8')
-
-            uninstall = self.run_script(UNINSTALL_SCRIPT, cwd=workspace, env=env)
-
-            self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
-            self.assertIn('left shared codex_hooks feature flag unchanged', uninstall.stdout)
-            self.assertEqual(config_toml.read_text(encoding='utf-8'), original_config)
-
     def test_uninstall_pristine_profile_reports_nothing_to_uninstall(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
             home = Path(tmp_home)
@@ -317,7 +280,6 @@ class InstallAndDoctorTests(unittest.TestCase):
             self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
             self.assertIn('Nothing to uninstall.', uninstall.stdout)
             self.assertNotIn('Uninstalled Codex Ralph:', uninstall.stdout)
-            self.assertNotIn('left shared codex_hooks feature flag unchanged', uninstall.stdout)
 
     def test_uninstall_skills_leaves_foreign_skill_symlink_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
@@ -567,103 +529,6 @@ class InstallAndDoctorTests(unittest.TestCase):
 
             doctor_after = self.run_script(DOCTOR_SCRIPT, cwd=workspace, env=env)
             self.assertEqual(doctor_after.returncode, 0)
-
-    def test_doctor_accepts_feature_flag_with_inline_comment(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
-            home = Path(tmp_home)
-            workspace = Path(tmp_workspace)
-            env = self.make_env(home)
-            self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
-
-            config_toml = home / '.codex' / 'config.toml'
-            config_toml.write_text('[features]\ncodex_hooks = true # enabled\n', encoding='utf-8')
-
-            doctor = self.run_script(DOCTOR_SCRIPT, cwd=workspace, env=env)
-            self.assertEqual(doctor.returncode, 0)
-            self.assertIn('[OK] Config: codex_hooks = true is enabled', doctor.stdout)
-
-    def test_install_updates_feature_flag_when_features_header_has_inline_comment(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
-            home = Path(tmp_home)
-            workspace = Path(tmp_workspace)
-            env = self.make_env(home)
-            config_toml = home / '.codex' / 'config.toml'
-            config_toml.parent.mkdir(parents=True, exist_ok=True)
-            config_toml.write_text(
-                '[features] # keep this comment\n'
-                '\n'
-                '[other] # keep this one too\n'
-                'value = 1\n',
-                encoding='utf-8',
-            )
-
-            install = self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
-
-            self.assertEqual(install.returncode, 0, install.stderr)
-            self.assertIn('enabled codex_hooks feature flag', install.stdout)
-            self.assertEqual(
-                config_toml.read_text(encoding='utf-8'),
-                '[features] # keep this comment\n'
-                'codex_hooks = true\n'
-                '\n'
-                '[other] # keep this one too\n'
-                'value = 1\n',
-            )
-
-            doctor = self.run_script(DOCTOR_SCRIPT, cwd=workspace, env=env)
-            self.assertEqual(doctor.returncode, 0)
-            self.assertIn('[OK] Config: codex_hooks = true is enabled', doctor.stdout)
-
-    def test_install_appends_features_section_after_child_table(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
-            home = Path(tmp_home)
-            workspace = Path(tmp_workspace)
-            env = self.make_env(home)
-            config_toml = home / '.codex' / 'config.toml'
-            config_toml.parent.mkdir(parents=True, exist_ok=True)
-            config_toml.write_text(
-                '[features.sub]\n'
-                'value = 1\n',
-                encoding='utf-8',
-            )
-
-            install = self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
-
-            self.assertEqual(install.returncode, 0, install.stderr)
-            self.assertIn('created [features] section with codex_hooks = true', install.stdout)
-            self.assertEqual(
-                config_toml.read_text(encoding='utf-8'),
-                '[features.sub]\n'
-                'value = 1\n'
-                '\n'
-                '[features]\n'
-                'codex_hooks = true\n',
-            )
-
-            doctor = self.run_script(DOCTOR_SCRIPT, cwd=workspace, env=env)
-            self.assertEqual(doctor.returncode, 0)
-            self.assertIn('[OK] Config: codex_hooks = true is enabled', doctor.stdout)
-
-    def test_doctor_fails_on_invalid_config_toml(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
-            home = Path(tmp_home)
-            workspace = Path(tmp_workspace)
-            env = self.make_env(home)
-            self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
-
-            config_toml = home / '.codex' / 'config.toml'
-            config_toml.write_text(
-                '[features]\n'
-                'codex_hooks = true\n'
-                'codex_hooks = false\n',
-                encoding='utf-8',
-            )
-
-            doctor = self.run_script(DOCTOR_SCRIPT, cwd=workspace, env=env)
-
-            self.assertEqual(doctor.returncode, 1)
-            self.assertIn('[FAIL] Config:', doctor.stdout)
-            self.assertIn('invalid TOML', doctor.stdout)
 
     def test_doctor_fails_on_truncated_state_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:

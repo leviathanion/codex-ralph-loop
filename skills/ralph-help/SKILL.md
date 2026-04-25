@@ -10,7 +10,7 @@ Explain Ralph succinctly, then tailor the rest to the user's question.
 ## Commands
 
 - `$install-ralph` installs Ralph into the current user profile.
-- `$uninstall-ralph` removes Ralph-managed skill links, copied hooks, and Stop-hook registration from the current user profile. It does not disable the shared `codex_hooks` feature flag.
+- `$uninstall-ralph` removes Ralph-managed skill links, copied hooks, and Stop-hook registration from the current user profile.
 - `$doctor-ralph` validates Ralph installation and workspace state.
 - `$ralph-loop` starts a workspace-local loop.
 - `$continue-ralph-loop` manually resumes an existing workspace-local loop, including stale `phase="running"` state left behind by a crash or restart.

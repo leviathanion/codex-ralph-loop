@@ -29,7 +29,6 @@ Packaged for install/doctor support, but not copied into `$CODEX_HOME/hooks/ralp
 - `profile/hook_registry.py`
 - `profile/installer.py`
 - `profile/package_manifest.py`
-- `profile/toml_feature_flag.py`
 - `hooks/hooks.json` (packaged registry example)
 
 ## Official Codex model
@@ -51,12 +50,7 @@ Runtime behavior is split cleanly:
 
 ## Python dependency
 
-Ralph requires Python 3.10 or newer. It uses Python's standard `tomllib` on Python 3.11
-and newer. On Python 3.10, install the declared fallback dependency first:
-
-```bash
-python3 -m pip install -r requirements.txt
-```
+Ralph requires Python 3.10 or newer and uses only the Python standard library.
 
 ## Install directly
 
@@ -71,7 +65,6 @@ That skill tells Codex to run the embedded installer, which:
 - symlinks the seven skills into `$AGENTS_HOME/skills`
 - installs the Python hook helpers into `$CODEX_HOME/hooks/ralph`
 - merges the Ralph `Stop` hook into `$CODEX_HOME/hooks.json`
-- ensures `codex_hooks = true` in `$CODEX_HOME/config.toml`
 
 To remove Ralph-managed skill links, copied hooks, and Stop-hook registration:
 
@@ -79,8 +72,6 @@ To remove Ralph-managed skill links, copied hooks, and Stop-hook registration:
 $uninstall-ralph
 ```
 
-`$uninstall-ralph` intentionally leaves `codex_hooks` unchanged in `$CODEX_HOME/config.toml`.
-That flag is a profile-wide Codex switch and may be shared with non-Ralph hooks.
 
 ## Bootstrap without the skill
 

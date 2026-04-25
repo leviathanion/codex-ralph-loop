@@ -174,9 +174,6 @@ class ProfileInstallerTests(unittest.TestCase):
             hooks_json.write_text('{}\n', encoding='utf-8')
             original_hooks_json = hooks_json.read_text(encoding='utf-8')
 
-            config_toml = codex_home / 'config.toml'
-            config_toml.mkdir()
-
             external_hook = home / 'external_common.py'
             external_hook.write_text('external\n', encoding='utf-8')
             target_hooks = codex_home / 'hooks' / 'ralph'
@@ -185,17 +182,17 @@ class ProfileInstallerTests(unittest.TestCase):
             os.symlink(external_hook, common_hook)
             original_symlink_target = os.readlink(common_hook)
 
-            with self.assertRaises(OSError):
-                profile_installer.install_profile(
-                    root_dir=REPO_ROOT,
-                    codex_home=codex_home,
-                    agents_home=agents_home,
-                )
+            with mock.patch.object(profile_installer, 'validate_stop_hook_registration', side_effect=OSError('boom')):
+                with self.assertRaises(OSError):
+                    profile_installer.install_profile(
+                        root_dir=REPO_ROOT,
+                        codex_home=codex_home,
+                        agents_home=agents_home,
+                    )
 
             self.assertEqual(hooks_json.read_text(encoding='utf-8'), original_hooks_json)
             self.assertTrue(common_hook.is_symlink())
             self.assertEqual(os.readlink(common_hook), original_symlink_target)
-            self.assertTrue(config_toml.is_dir())
             self.assertFalse((agents_home / 'skills').exists())
             self.assertFalse((target_hooks / 'stop_continue.py').exists())
 
@@ -329,11 +326,6 @@ class ProfileInstallerTests(unittest.TestCase):
             hooks_json.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(hooks_target, hooks_json)
 
-            config_target = dotfiles / 'config.toml'
-            config_target.write_text('[features]\ncodex_hooks = false\n', encoding='utf-8')
-            config_toml = codex_home / 'config.toml'
-            os.symlink(config_target, config_toml)
-
             changes = profile_installer.install_profile(
                 root_dir=REPO_ROOT,
                 codex_home=codex_home,
@@ -345,15 +337,7 @@ class ProfileInstallerTests(unittest.TestCase):
             self.assertEqual(hooks_json.resolve(), hooks_target.resolve())
             saved_registry = json.loads(hooks_target.read_text(encoding='utf-8'))
             self.assertIn('Stop', saved_registry.get('hooks', {}))
-
-            self.assertTrue(config_toml.is_symlink())
-            self.assertEqual(config_toml.resolve(), config_target.resolve())
-            self.assertEqual(
-                config_target.read_text(encoding='utf-8'),
-                '[features]\ncodex_hooks = true\n',
-            )
             self.assertIn('registered Stop hook', changes)
-            self.assertIn('enabled codex_hooks feature flag', changes)
 
     def test_install_profile_rolls_back_symlink_target_updates_on_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home:
@@ -370,13 +354,7 @@ class ProfileInstallerTests(unittest.TestCase):
             hooks_json.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(hooks_target, hooks_json)
 
-            config_target = dotfiles / 'config.toml'
-            config_target_original = '[features]\ncodex_hooks = false\n'
-            config_target.write_text(config_target_original, encoding='utf-8')
-            config_toml = codex_home / 'config.toml'
-            os.symlink(config_target, config_toml)
-
-            with mock.patch.object(profile_installer, 'record_feature_flag_change', side_effect=OSError('boom')):
+            with mock.patch.object(profile_installer, 'validate_stop_hook_registration', side_effect=OSError('boom')):
                 with self.assertRaisesRegex(OSError, 'boom'):
                     profile_installer.install_profile(
                         root_dir=REPO_ROOT,
@@ -387,8 +365,6 @@ class ProfileInstallerTests(unittest.TestCase):
 
             self.assertTrue(hooks_json.is_symlink())
             self.assertEqual(hooks_target.read_text(encoding='utf-8'), hooks_target_original)
-            self.assertTrue(config_toml.is_symlink())
-            self.assertEqual(config_target.read_text(encoding='utf-8'), config_target_original)
             self.assertFalse((codex_home / 'hooks' / 'ralph' / 'stop_continue.py').exists())
 
     def test_install_profile_rolls_back_created_symlink_target_parent_dirs_on_failure(self) -> None:
@@ -404,14 +380,9 @@ class ProfileInstallerTests(unittest.TestCase):
             hooks_json.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(hooks_target, hooks_json)
 
-            config_target = dotfiles / 'config.toml'
-            config_target.write_text('[features]\ncodex_hooks = false\n', encoding='utf-8')
-            config_toml = codex_home / 'config.toml'
-            os.symlink(config_target, config_toml)
-
             self.assertFalse(hooks_target.parent.exists())
 
-            with mock.patch.object(profile_installer, 'record_feature_flag_change', side_effect=OSError('boom')):
+            with mock.patch.object(profile_installer, 'validate_stop_hook_registration', side_effect=OSError('boom')):
                 with self.assertRaisesRegex(OSError, 'boom'):
                     profile_installer.install_profile(
                         root_dir=REPO_ROOT,
@@ -423,7 +394,6 @@ class ProfileInstallerTests(unittest.TestCase):
             self.assertFalse(hooks_target.exists())
             self.assertFalse(hooks_target.parent.exists())
             self.assertTrue(hooks_json.is_symlink())
-            self.assertEqual(config_target.read_text(encoding='utf-8'), '[features]\ncodex_hooks = false\n')
             self.assertFalse((codex_home / 'hooks' / 'ralph' / 'stop_continue.py').exists())
 
 

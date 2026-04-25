@@ -61,7 +61,6 @@ codex-ralph-loop/
     installer.py                  # install/uninstall profile files
     hook_registry.py              # hooks.json read/write/repair helpers
     doctor.py                     # read-only diagnostics
-    toml_feature_flag.py          # config.toml feature flag handling
     package_manifest.py           # installed file/package manifest
 
   skills/
@@ -95,7 +94,7 @@ It should not:
 
 - parse `RALPH_STATUS`;
 - know state compatibility rules;
-- edit `hooks.json`, `config.toml`, or installed hook files;
+- edit `hooks.json`, or installed hook files;
 - contain the loop state machine;
 - create workspace files for a missing Ralph state.
 
@@ -211,7 +210,6 @@ Profile tooling owns installation and diagnostics only:
 - copy runtime hook helper files into `$CODEX_HOME/hooks/ralph`;
 - copy `ralph_core/` into `$CODEX_HOME/hooks/ralph/ralph_core`;
 - register the global `Stop` hook in `$CODEX_HOME/hooks.json`;
-- enable `codex_hooks = true` in `$CODEX_HOME/config.toml`;
 - uninstall Ralph-managed artifacts without disabling shared Codex hook support;
 - diagnose profile and workspace health.
 

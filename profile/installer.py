@@ -22,7 +22,6 @@ from .hook_registry import (
     unregister_stop_hook,
 )
 from .package_manifest import RUNTIME_PACKAGE_DIRS, STOP_HOOK_FILE, STOP_HOOK_FILES, SKILL_NAMES
-from .toml_feature_flag import EnsureStatus, ensure_codex_hooks_enabled
 
 Mode = Literal['all', 'skills-only', 'hooks-only']
 SnapshotKind = Literal['missing', 'file', 'directory', 'symlink']
@@ -64,10 +63,6 @@ class InstallPaths:
     @property
     def hooks_json(self) -> Path:
         return self.codex_home / 'hooks.json'
-
-    @property
-    def config_toml(self) -> Path:
-        return self.codex_home / 'config.toml'
 
 
 class InstallTransaction:
@@ -368,7 +363,6 @@ def install_profile(
             install_skills(paths, transaction, changes)
         if mode in {'all', 'hooks-only'}:
             install_hooks(paths, transaction, changes)
-            ensure_feature_flag(paths, transaction, changes)
         transaction.commit()
     return changes
 
@@ -486,7 +480,6 @@ def install_hooks(paths: InstallPaths, transaction: InstallTransaction, changes:
 
 
 def uninstall_hooks(paths: InstallPaths, transaction: InstallTransaction, changes: list[str]) -> None:
-    initial_change_count = len(changes)
     hook_directory_error: str | None = None
     try:
         validate_managed_hook_directory(paths)
@@ -531,8 +524,6 @@ def uninstall_hooks(paths: InstallPaths, transaction: InstallTransaction, change
         changes.append(f'left hook files unchanged ({hook_directory_error})')
         if hooks_json_error is not None:
             changes.append(f'left hooks.json unchanged ({hooks_json_error})')
-        if len(changes) > initial_change_count:
-            changes.append('left shared codex_hooks feature flag unchanged (profile-wide Codex setting)')
         return
 
     for hook_name in STOP_HOOK_FILES:
@@ -553,34 +544,6 @@ def uninstall_hooks(paths: InstallPaths, transaction: InstallTransaction, change
 
     if hooks_json_error is not None:
         changes.append(f'left hooks.json unchanged ({hooks_json_error})')
-
-    if len(changes) > initial_change_count:
-        # Trade-off: keep warning users that uninstall intentionally leaves the shared Codex hook
-        # feature flag enabled, but do not let that informational note turn a true no-op uninstall
-        # into a misleading "Uninstalled Codex Ralph" result.
-        changes.append('left shared codex_hooks feature flag unchanged (profile-wide Codex setting)')
-
-
-def ensure_feature_flag(paths: InstallPaths, transaction: InstallTransaction, changes: list[str]) -> None:
-    transaction.ensure_dir(paths.config_toml.parent)
-    transaction.snapshot_atomic_write_path(paths.config_toml, preserve_leaf_symlink=True)
-    feature_status = ensure_codex_hooks_enabled(paths.config_toml)
-    record_feature_flag_change(feature_status, changes)
-
-
-def record_feature_flag_change(feature_status: EnsureStatus, changes: list[str]) -> None:
-    if feature_status == 'unchanged':
-        return
-    if feature_status == 'created':
-        changes.append('created [features] section with codex_hooks = true')
-        return
-    if feature_status == 'deduplicated':
-        changes.append('removed duplicate codex_hooks entries')
-        return
-    if feature_status == 'updated':
-        changes.append('enabled codex_hooks feature flag')
-        return
-    raise ValueError(f'unexpected feature flag update status: {feature_status}')
 
 
 def build_parser() -> argparse.ArgumentParser:
