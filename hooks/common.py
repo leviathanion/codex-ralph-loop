@@ -45,7 +45,7 @@ STATUS_BLOCK_PATTERN = re.compile(
     rf'\r?\n[ \t]*{re.escape(RALPH_STATUS_END_MARKER)}[ \t]*\r?$',
     re.DOTALL | re.MULTILINE,
 )
-MARKDOWN_FENCE_PATTERN = re.compile(r'^[ \t]{0,3}([`~]{3,})(.*)$')
+MARKDOWN_FENCE_PATTERN = re.compile(r'^[ \t]{0,3}(`{3,}|~{3,})(.*)$')
 MARKDOWN_INDENTED_CODE_PATTERN = re.compile(r'^(?: {4,}|\t)')
 
 
@@ -259,6 +259,12 @@ def mask_markdown_fenced_code_blocks(text: str) -> str:
                 continue
 
             fence = match.group(1)
+            if fence[0] == '`' and '`' in match.group(2):
+                # Trade-off: follow CommonMark's extra backtick-fence rule instead of masking
+                # every line that starts with three backticks. Invalid pseudo-fences must not be
+                # able to hide live Ralph status markers from the Stop hook.
+                masked_lines.append(raw_line)
+                continue
             active_fence = (fence[0], len(fence))
             pending_fence_lines = [raw_line]
             continue

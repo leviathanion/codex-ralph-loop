@@ -456,6 +456,49 @@ CHECKS:
 
         self.assertFalse(common.contains_ralph_status_markup(message))
 
+    def test_contains_ralph_status_markup_ignores_tilde_fenced_example_block(self) -> None:
+        message = (
+            'Document the required format for future contributors.\n'
+            '~~~text\n'
+            '---RALPH_STATUS---\n'
+            'STATUS: progress\n'
+            'SUMMARY: example only\n'
+            'FILES:\n'
+            'CHECKS:\n'
+            '---END_RALPH_STATUS---\n'
+            '~~~\n'
+        )
+
+        self.assertFalse(common.contains_ralph_status_markup(message))
+
+    def test_contains_ralph_status_markup_detects_unclosed_backtick_fence_with_tilde_info(self) -> None:
+        message = (
+            '```~\n'
+            '---RALPH_STATUS---\n'
+            'STATUS: progress\n'
+            'SUMMARY: unclosed backtick fence must not hide markers\n'
+            'FILES:\n'
+            'CHECKS:\n'
+            '---END_RALPH_STATUS---\n'
+            '```~\n'
+        )
+
+        self.assertTrue(common.contains_ralph_status_markup(message))
+
+    def test_contains_ralph_status_markup_detects_backtick_in_backtick_fence_info(self) -> None:
+        message = (
+            '``` `\n'
+            '---RALPH_STATUS---\n'
+            'STATUS: progress\n'
+            'SUMMARY: invalid backtick fence must not hide markers\n'
+            'FILES:\n'
+            'CHECKS:\n'
+            '---END_RALPH_STATUS---\n'
+            '```\n'
+        )
+
+        self.assertTrue(common.contains_ralph_status_markup(message))
+
     def test_contains_ralph_status_markup_ignores_indented_example_block(self) -> None:
         message = (
             'Document the required format for future contributors.\n'
