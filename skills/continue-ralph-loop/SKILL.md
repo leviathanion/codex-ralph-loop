@@ -34,7 +34,7 @@ CHECKS: passed:npm test; failed:pytest -q
 
 6. Only finish the loop when the task is fully and verifiably complete and the stored completion token is truthfully appropriate.
    Put the completion token on the final non-whitespace line by itself.
-   If you also include a `RALPH_STATUS` block before that token, it must report `STATUS: complete`.
+   If you also include a `RALPH_STATUS` block, it must be immediately before that token and report `STATUS: complete`.
    If an unfinished-turn status block is missing or malformed, Ralph will stop instead of silently continuing.
 7. Use exactly those four fields and no extras.
 8. `FILES` is split on commas and `CHECKS` is split on semicolons. Do not put a literal comma inside one file item or a literal semicolon inside one check item; split or summarize instead.

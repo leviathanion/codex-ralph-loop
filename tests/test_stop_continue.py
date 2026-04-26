@@ -311,6 +311,41 @@ class StopContinueHookTests(unittest.TestCase):
             self.assertEqual(entries[-1]['status'], 'complete')
             self.assertEqual(entries[-1]['files'], ['hooks/stop_continue.py'])
 
+    def test_completion_token_rejects_earlier_raw_status_block_before_terminal_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            state_store.save_state(make_state(), str(workspace))
+
+            result = self.run_hook(workspace, {
+                'cwd': str(workspace),
+                'session_id': 'session-1',
+                'last_assistant_message': (
+                    '---RALPH_STATUS---\n'
+                    'STATUS: progress\n'
+                    'SUMMARY: raw duplicate control block\n'
+                    'FILES: hooks/stop_continue.py\n'
+                    'CHECKS: passed:python3 -m unittest\n'
+                    '---END_RALPH_STATUS---\n'
+                    '---RALPH_STATUS---\n'
+                    'STATUS: complete\n'
+                    'SUMMARY: wrapped up the task\n'
+                    'FILES: hooks/stop_continue.py\n'
+                    'CHECKS: passed:python3 -m unittest\n'
+                    '---END_RALPH_STATUS---\n'
+                    '<promise>DONE</promise>'
+                ),
+            })
+
+            response = json.loads(result.stdout)
+            self.assertIn('RALPH_STATUS block was malformed', response['systemMessage'])
+            self.assertIn('final non-whitespace content before the completion token', response['systemMessage'])
+            self.assertTrue(common.state_path(str(workspace)).exists())
+            self.assertEqual(self.read_state(workspace)['phase'], 'blocked')
+
+            entries = self.read_progress(workspace)
+            self.assertEqual(entries[-1]['status'], 'stopped')
+            self.assertEqual(entries[-1]['reason'], 'invalid_status_block')
+
     def test_inline_completion_token_reference_does_not_complete_loop(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)

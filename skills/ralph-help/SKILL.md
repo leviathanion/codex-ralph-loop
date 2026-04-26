@@ -45,7 +45,8 @@ The default Ralph loop only ends automatically when the assistant truthfully out
 <promise>DONE</promise>
 ```
 
-If a completed turn also includes a `RALPH_STATUS` block before that token, it must report `STATUS: complete`.
+If a completed turn also includes a `RALPH_STATUS` block, it must be immediately before that token and report `STATUS: complete`.
+Raw non-terminal `RALPH_STATUS` marker lines are rejected; put protocol examples inside Markdown code blocks.
 
 ## Required unfinished-turn status block
 

@@ -180,7 +180,7 @@ class CommonModuleTests(unittest.TestCase):
             path = Path(tmpdir) / 'sample.txt'
             path.write_text('old\n', encoding='utf-8')
 
-            with mock.patch.object(common, 'fsync_directory', side_effect=OSError('boom')):
+            with mock.patch.object(state_store, 'fsync_directory', side_effect=OSError('boom')):
                 common.atomic_write_text(path, 'new\n')
 
             self.assertEqual(path.read_text(encoding='utf-8'), 'new\n')
@@ -638,6 +638,28 @@ CHECKS:
         self.assertTrue(parsed['ok'])
         self.assertEqual(parsed['status'], 'complete')
         self.assertEqual(parsed['files'], ['hooks/common.py'])
+
+    def test_parse_trailing_ralph_status_rejects_earlier_raw_status_block(self) -> None:
+        message = (
+            '---RALPH_STATUS---\n'
+            'STATUS: progress\n'
+            'SUMMARY: earlier raw control block\n'
+            'FILES: hooks/common.py\n'
+            'CHECKS: passed:python3 -m unittest\n'
+            '---END_RALPH_STATUS---\n'
+            '---RALPH_STATUS---\n'
+            'STATUS: complete\n'
+            'SUMMARY: final answer is complete\n'
+            'FILES: hooks/common.py\n'
+            'CHECKS: passed:python3 -m unittest\n'
+            '---END_RALPH_STATUS---\n'
+        )
+
+        parsed, attempted = common.parse_trailing_ralph_status(message)
+
+        self.assertTrue(attempted)
+        self.assertFalse(parsed['ok'])
+        self.assertIn('final non-whitespace content before the completion token', parsed['error'])
 
     def test_parse_trailing_ralph_status_ignores_indented_example_block(self) -> None:
         message = (

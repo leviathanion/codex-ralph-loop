@@ -105,7 +105,7 @@ class LoopControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
 
-            with mock.patch.object(common, 'fsync_directory', side_effect=OSError('boom')):
+            with mock.patch.object(state_store, 'fsync_directory', side_effect=OSError('boom')):
                 result = loop_control.start_loop(
                     cwd=str(workspace),
                     prompt='Ship the feature',

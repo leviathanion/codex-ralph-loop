@@ -186,9 +186,15 @@ def parse_trailing_ralph_status(text: str) -> tuple[RalphStatusParseResult, bool
                 'ok': False,
                 'error': 'missing RALPH_STATUS start marker before trailing end marker',
             }, True)
+        if contains_ralph_status_markup(searchable_text[:trailing_start.start()]):
+            return ({
+                'ok': False,
+                'error': 'RALPH_STATUS block must be the final non-whitespace content before the completion token',
+            }, True)
         # Trade-off: on completed turns, only the terminal block immediately before the
-        # completion token is treated as control data. Earlier blocks remain normal message
-        # content so doc/help responses can quote the protocol without being trapped as paused.
+        # completion token is treated as control data. Earlier fenced or indented examples remain
+        # normal message content so doc/help responses can quote the protocol without being
+        # trapped as paused, but raw earlier markers are rejected as ambiguous control syntax.
         candidate = trimmed[trailing_start.start():trailing_end.end()]
         return (parse_ralph_status(candidate), True)
 

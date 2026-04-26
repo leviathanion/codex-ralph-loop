@@ -106,7 +106,8 @@ That same command also reclaims a stale running state when Codex crashed or rest
 If you want to abandon the current loop and start fresh, run `$cancel-ralph` before `$ralph-loop`.
 
 A completed Ralph turn must place `<promise>DONE</promise>` on the final non-whitespace line by itself.
-If a completed turn also includes a `RALPH_STATUS` block before that token, it must report `STATUS: complete`.
+If a completed turn also includes a `RALPH_STATUS` block, it must be immediately before that token and report `STATUS: complete`.
+Raw non-terminal `RALPH_STATUS` marker lines are rejected; put protocol examples inside Markdown code blocks.
 
 Every unfinished Ralph turn must end with exactly one status block as its final non-whitespace content:
 
