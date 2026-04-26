@@ -53,7 +53,7 @@ def state_needs_session_payload(state_result: storage.StateReadResult) -> bool:
     state = state_result.value
     if state is None:
         return False
-    return state['active'] and state['phase'] == 'running'
+    return state['phase'] == 'running'
 
 
 def state_value_or_storage_error(state_result: storage.StateReadResult, cwd: str) -> LoopState:
@@ -76,4 +76,3 @@ def handle_stop_event(event: StopEvent) -> RuntimeDecision:
             return decision
     except StorageError as exc:
         return stop_decision(storage_error_message(str(exc)))
-

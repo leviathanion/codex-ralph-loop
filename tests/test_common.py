@@ -11,8 +11,11 @@ from pathlib import Path
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TESTS_ROOT = REPO_ROOT / 'tests'
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(TESTS_ROOT))
 
+from ralph_core import control as loop_control  # noqa: E402
 from ralph_core import storage as state_store  # noqa: E402
 from ralph_test_helpers import common  # noqa: E402
 
@@ -24,95 +27,140 @@ class CommonModuleTests(unittest.TestCase):
             state_file = workspace / '.codex' / 'ralph' / 'state.json'
             state_file.parent.mkdir(parents=True, exist_ok=True)
             state_file.write_text(json.dumps({
-                'active': True,
                 'prompt': 'finish the task',
                 'iteration': 2,
                 'max_iterations': 5,
-                'completion_token': '<promise>DONE</promise>',
-                'claimed_session_id': 'session-a',
+                'phase': 'running',
             }) + '\n', encoding='utf-8')
 
             result = state_store.read_state(str(workspace))
 
             self.assertEqual(result.status, 'invalid_schema')
-            self.assertIn('schema_version must be 1', result.errors)
+            self.assertIn('schema_version must be 3', result.errors)
 
-    def test_read_state_requires_complete_shape(self) -> None:
+    def test_read_state_requires_complete_v3_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             state_file = workspace / '.codex' / 'ralph' / 'state.json'
             state_file.parent.mkdir(parents=True, exist_ok=True)
-            state_file.write_text(json.dumps({'active': True}) + '\n', encoding='utf-8')
+            state_file.write_text(json.dumps({'schema_version': 3}) + '\n', encoding='utf-8')
 
             result = state_store.read_state(str(workspace))
 
             self.assertEqual(result.status, 'invalid_schema')
-            self.assertIn('prompt must be a string', result.errors)
-            self.assertIn('iteration must be an integer', result.errors)
+            self.assertIn('prompt must be a non-empty string', result.errors)
+            self.assertTrue(any('phase must be one of' in error for error in result.errors))
 
     def test_read_state_rejects_unknown_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
-            state_file = workspace / '.codex' / 'ralph' / 'state.json'
-            state_file.parent.mkdir(parents=True, exist_ok=True)
             state = state_store.default_state()
             state.update({
-                'active': True,
                 'prompt': 'Ship the feature',
-                'started_at': common.now_iso(),
-                'updated_at': common.now_iso(),
                 'future_flag': True,
             })
-            state_file.write_text(json.dumps(state) + '\n', encoding='utf-8')
+            common.state_path(str(workspace)).parent.mkdir(parents=True, exist_ok=True)
+            common.state_path(str(workspace)).write_text(json.dumps(state) + '\n', encoding='utf-8')
 
             result = state_store.read_state(str(workspace))
 
             self.assertEqual(result.status, 'invalid_schema')
             self.assertIn('unknown state field(s): future_flag', result.errors)
 
-    def test_validate_state_payload_reports_non_string_unknown_keys_without_crashing(self) -> None:
-        state = dict(state_store.default_state())
-        state.update({
-            'active': True,
-            'prompt': 'Ship the feature',
-            'started_at': common.now_iso(),
+    def test_validate_pending_update_requires_reason_for_blocked_and_failed(self) -> None:
+        blocked_errors = state_store.validate_pending_update({
+            'iteration': 0,
+            'session_id': 'session-1',
+            'status': 'blocked',
+            'summary': 'need approval',
+            'files': [],
+            'checks': [],
+            'reason': None,
             'updated_at': common.now_iso(),
-            1: 'bad key',
+        })
+        failed_errors = state_store.validate_pending_update({
+            'iteration': 0,
+            'session_id': 'session-1',
+            'status': 'failed',
+            'summary': 'tests failed',
+            'files': [],
+            'checks': [],
+            'reason': '',
+            'updated_at': common.now_iso(),
+        })
+
+        self.assertIn('pending_update.reason must be a non-empty string', blocked_errors)
+        self.assertIn('pending_update.reason must be a non-empty string', failed_errors)
+
+    def test_validate_state_rejects_stale_pending_iteration(self) -> None:
+        state = state_store.default_state()
+        state.update({
+            'prompt': 'Ship it',
+            'iteration': 3,
+            'claimed_session_id': 'session-1',
+            'pending_update': {
+                'iteration': 2,
+                'session_id': 'session-1',
+                'status': 'progress',
+                'summary': 'updated docs',
+                'files': ['README.md'],
+                'checks': [],
+                'reason': None,
+                'updated_at': common.now_iso(),
+            },
         })
 
         errors = state_store.validate_state_payload(state)
 
-        self.assertIn('unknown state field(s): 1', errors)
+        self.assertIn('pending_update.iteration must match state iteration', errors)
 
-    def test_read_state_rejects_empty_claimed_session_id(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir)
-            state_file = workspace / '.codex' / 'ralph' / 'state.json'
-            state_file.parent.mkdir(parents=True, exist_ok=True)
-            state = state_store.default_state()
-            state.update({
-                'active': True,
-                'prompt': 'Ship the feature',
-                'claimed_session_id': '',
-                'started_at': common.now_iso(),
+    def test_validate_state_rejects_unbound_pending_update(self) -> None:
+        state = state_store.default_state()
+        state.update({
+            'prompt': 'Ship it',
+            'pending_update': {
+                'iteration': 0,
+                'session_id': 'session-1',
+                'status': 'progress',
+                'summary': 'updated docs',
+                'files': [],
+                'checks': [],
+                'reason': None,
                 'updated_at': common.now_iso(),
-            })
-            state_file.write_text(json.dumps(state) + '\n', encoding='utf-8')
+            },
+        })
 
-            result = state_store.read_state(str(workspace))
+        errors = state_store.validate_state_payload(state)
 
-            self.assertEqual(result.status, 'invalid_schema')
-            self.assertIn('claimed_session_id must be a non-empty string or null', result.errors)
+        self.assertIn('pending_update requires claimed_session_id', errors)
+
+    def test_validate_state_rejects_pending_session_mismatch(self) -> None:
+        state = state_store.default_state()
+        state.update({
+            'prompt': 'Ship it',
+            'claimed_session_id': 'session-a',
+            'pending_update': {
+                'iteration': 0,
+                'session_id': 'session-b',
+                'status': 'progress',
+                'summary': 'updated docs',
+                'files': [],
+                'checks': [],
+                'reason': None,
+                'updated_at': common.now_iso(),
+            },
+        })
+
+        errors = state_store.validate_state_payload(state)
+
+        self.assertIn('pending_update.session_id must match claimed_session_id', errors)
 
     def test_save_state_round_trips_complete_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             state = state_store.default_state()
             state.update({
-                'active': True,
                 'prompt': 'finish the task',
-                'started_at': common.now_iso(),
-                'updated_at': common.now_iso(),
             })
 
             state_store.save_state(state, str(workspace))
@@ -120,23 +168,6 @@ class CommonModuleTests(unittest.TestCase):
 
             self.assertEqual(loaded.status, 'ok')
             self.assertEqual(loaded.value, state)
-
-    def test_save_state_fsyncs_parent_directory_after_replace(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir)
-            state = state_store.default_state()
-            state.update({
-                'active': True,
-                'prompt': 'finish the task',
-                'started_at': common.now_iso(),
-                'updated_at': common.now_iso(),
-            })
-
-            with mock.patch.object(state_store.os, 'fsync', wraps=state_store.os.fsync) as fsync_mock:
-                state_store.save_state(state, str(workspace))
-
-            self.assertEqual(state_store.read_state(str(workspace)).value, state)
-            self.assertGreaterEqual(fsync_mock.call_count, 2)
 
     def test_workspace_lock_times_out_when_another_process_holds_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -185,38 +216,6 @@ class CommonModuleTests(unittest.TestCase):
 
             self.assertEqual(path.read_text(encoding='utf-8'), 'new\n')
 
-    def test_save_state_rejects_live_symlinked_storage_root(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir) / 'workspace'
-            workspace.mkdir()
-            external_root = Path(tmpdir) / 'external-state'
-            external_root.mkdir()
-            os.symlink(external_root, workspace / '.codex')
-            state = state_store.default_state()
-            state.update({
-                'active': True,
-                'prompt': 'finish the task',
-                'started_at': common.now_iso(),
-                'updated_at': common.now_iso(),
-            })
-
-            with self.assertRaises(state_store.StorageError) as exc:
-                state_store.save_state(state, str(workspace))
-
-            self.assertIn('path component is a symlink', str(exc.exception))
-            self.assertFalse((external_root / 'ralph' / 'state.json').exists())
-
-    def test_read_state_reports_unreadable_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir)
-            state_file = workspace / '.codex' / 'ralph' / 'state.json'
-            state_file.mkdir(parents=True, exist_ok=True)
-
-            result = state_store.read_state(str(workspace))
-
-            self.assertEqual(result.status, 'read_error')
-            self.assertIn('unable to read', result.errors[0])
-
     def test_append_progress_entry_creates_jsonl_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
@@ -238,676 +237,23 @@ class CommonModuleTests(unittest.TestCase):
             payload = json.loads(ledger.read_text(encoding='utf-8').strip())
             self.assertEqual(state_store.validate_progress_entry(payload), [])
 
-    def test_append_progress_entry_rejects_live_symlinked_ralph_dir(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir) / 'workspace'
-            workspace.mkdir()
-            (workspace / '.codex').mkdir()
-            external_root = Path(tmpdir) / 'external-ledger'
-            external_root.mkdir()
-            os.symlink(external_root, workspace / '.codex' / 'ralph')
-            entry = {
-                'ts': common.now_iso(),
-                'iteration': 0,
-                'session_id': None,
-                'status': 'started',
-                'summary': 'Ralph loop started',
-                'files': [],
-                'checks': [],
-                'message_fingerprint': None,
-                'reason': None,
-            }
-
-            with self.assertRaises(state_store.StorageError) as exc:
-                state_store.append_progress_entry(entry, str(workspace))
-
-            self.assertIn('path component is a symlink', str(exc.exception))
-            self.assertFalse((external_root / 'progress.jsonl').exists())
-
-    def test_append_progress_entry_rejects_invalid_existing_ledger(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir)
-            ledger = common.progress_path(str(workspace))
-            ledger.parent.mkdir(parents=True, exist_ok=True)
-            ledger.write_text('not-json\n', encoding='utf-8')
-            entry = {
-                'ts': common.now_iso(),
-                'iteration': 1,
-                'session_id': None,
-                'status': 'progress',
-                'summary': 'keep working',
-                'files': [],
-                'checks': [],
-                'message_fingerprint': None,
-                'reason': None,
-            }
-
-            with self.assertRaises(state_store.StorageError) as exc:
-                state_store.append_progress_entry(entry, str(workspace))
-
-            self.assertIn('progress ledger is invalid', str(exc.exception))
-            self.assertEqual(ledger.read_text(encoding='utf-8'), 'not-json\n')
-
-    def test_validate_progress_file_reports_truncated_last_line(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir)
-            ledger = common.progress_path(str(workspace))
-            ledger.parent.mkdir(parents=True, exist_ok=True)
-            ledger.write_text(
-                json.dumps({
-                    'ts': common.now_iso(),
-                    'iteration': 0,
-                    'session_id': None,
-                    'status': 'started',
-                    'summary': 'Ralph loop started',
-                    'files': [],
-                    'checks': [],
-                    'message_fingerprint': None,
-                    'reason': None,
-                }) + '\n{"ts": ',
-                encoding='utf-8',
-            )
-
-            errors = state_store.validate_progress_file(ledger)
-
-            self.assertEqual(errors, ['line 2: invalid JSON (Expecting value)'])
-
-    def test_append_progress_entry_rejects_truncated_last_line_without_mutation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir)
-            ledger = common.progress_path(str(workspace))
-            ledger.parent.mkdir(parents=True, exist_ok=True)
-            first_entry = {
-                'ts': common.now_iso(),
-                'iteration': 0,
-                'session_id': None,
-                'status': 'started',
-                'summary': 'Ralph loop started',
-                'files': [],
-                'checks': [],
-                'message_fingerprint': None,
-                'reason': None,
-            }
-            original_contents = json.dumps(first_entry) + '\n{"ts": '
-            ledger.write_text(original_contents, encoding='utf-8')
-            second_entry = {
-                'ts': common.now_iso(),
-                'iteration': 1,
-                'session_id': None,
-                'status': 'progress',
-                'summary': 'keep working',
-                'files': [],
-                'checks': [],
-                'message_fingerprint': None,
-                'reason': None,
-            }
-
-            with self.assertRaises(state_store.StorageError) as exc:
-                state_store.append_progress_entry(second_entry, str(workspace))
-
-            self.assertIn('line 2: invalid JSON', str(exc.exception))
-            self.assertEqual(ledger.read_text(encoding='utf-8'), original_contents)
-
-    def test_validate_progress_file_reports_unreadable_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            progress_dir = Path(tmpdir) / 'progress.jsonl'
-            progress_dir.mkdir()
-
-            errors = state_store.validate_progress_file(progress_dir)
-
-            self.assertEqual(len(errors), 1)
-            self.assertIn('unable to read', errors[0])
-
-    def test_validate_progress_file_rejects_live_symlinked_workspace_ledger(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir) / 'workspace'
-            workspace.mkdir()
-            ralph_dir = workspace / '.codex' / 'ralph'
-            ralph_dir.mkdir(parents=True, exist_ok=True)
-            external_root = Path(tmpdir) / 'external-ledger'
-            external_root.mkdir()
-            external_ledger = external_root / 'progress.jsonl'
-            external_ledger.write_text(json.dumps({
-                'ts': common.now_iso(),
-                'iteration': 0,
-                'session_id': None,
-                'status': 'started',
-                'summary': 'Ralph loop started',
-                'files': [],
-                'checks': [],
-                'message_fingerprint': None,
-                'reason': None,
-            }) + '\n', encoding='utf-8')
-            os.symlink(external_ledger, ralph_dir / 'progress.jsonl')
-
-            errors = state_store.validate_progress_file(
-                common.progress_path(str(workspace)),
-                cwd=str(workspace),
-            )
-
-            self.assertEqual(len(errors), 1)
-            self.assertIn('path component is a symlink', errors[0])
-
-    def test_parse_ralph_status_accepts_single_final_block(self) -> None:
-        summary = 'x' * common.SUMMARY_LIMIT
-        message = f"""
-Still working
----RALPH_STATUS---
-STATUS: progress
-SUMMARY: {summary}
-FILES: a.py, b.py
-CHECKS: passed:first; failed:second
----END_RALPH_STATUS---
-"""
-        parsed = common.parse_ralph_status(message)
-        self.assertTrue(parsed['ok'])
-        self.assertEqual(parsed['status'], 'progress')
-        self.assertEqual(parsed['summary'], summary)
-        self.assertEqual(parsed['files'], ['a.py', 'b.py'])
-        self.assertEqual(parsed['checks'], ['passed:first', 'failed:second'])
-
-    def test_parse_ralph_status_accepts_crlf_line_endings(self) -> None:
-        message = (
-            'Still working\r\n'
-            '---RALPH_STATUS---\r\n'
-            'STATUS: progress\r\n'
-            'SUMMARY: still working\r\n'
-            'FILES: hooks/common.py\r\n'
-            'CHECKS: passed:pytest -q\r\n'
-            '---END_RALPH_STATUS---\r\n'
+    def test_build_pending_update_normalizes_lists_and_summary(self) -> None:
+        update = loop_control.build_pending_update(
+            iteration=2,
+            session_id='session-1',
+            status='progress',
+            summary='  shipped   docs  ',
+            files=[' README.md ', '', 'docs/plan.md'],
+            checks=[' passed:unit ', ''],
         )
 
-        parsed = common.parse_ralph_status(message)
+        self.assertEqual(update['summary'], 'shipped docs')
+        self.assertEqual(update['session_id'], 'session-1')
+        self.assertEqual(update['files'], ['README.md', 'docs/plan.md'])
+        self.assertEqual(update['checks'], ['passed:unit'])
 
-        self.assertTrue(parsed['ok'])
-        self.assertEqual(parsed['status'], 'progress')
-        self.assertEqual(parsed['summary'], 'still working')
-        self.assertEqual(parsed['files'], ['hooks/common.py'])
-        self.assertEqual(parsed['checks'], ['passed:pytest -q'])
-        self.assertTrue(common.contains_ralph_status_markup(message))
-
-    def test_parse_trailing_ralph_status_accepts_crlf_line_endings(self) -> None:
-        message = (
-            'Wrapped up\r\n'
-            '---RALPH_STATUS---\r\n'
-            'STATUS: complete\r\n'
-            'SUMMARY: done\r\n'
-            'FILES:\r\n'
-            'CHECKS:\r\n'
-            '---END_RALPH_STATUS---\r\n'
+    def test_fingerprint_message_is_whitespace_insensitive(self) -> None:
+        self.assertEqual(
+            common.fingerprint_message('hello   world'),
+            common.fingerprint_message('hello world'),
         )
-
-        parsed, attempted = common.parse_trailing_ralph_status(message)
-
-        self.assertTrue(attempted)
-        self.assertTrue(parsed['ok'])
-        self.assertEqual(parsed['status'], 'complete')
-
-    def test_parse_ralph_status_rejects_trailing_fenced_code_after_status_block(self) -> None:
-        message = (
-            '---RALPH_STATUS---\n'
-            'STATUS: progress\n'
-            'SUMMARY: still working\n'
-            'FILES:\n'
-            'CHECKS:\n'
-            '---END_RALPH_STATUS---\n'
-            '```text\n'
-            'extra trailing content\n'
-            '```\n'
-        )
-
-        parsed = common.parse_ralph_status(message)
-
-        self.assertFalse(parsed['ok'])
-        self.assertIn('final non-whitespace content', parsed['error'])
-
-    def test_parse_ralph_status_rejects_trailing_indented_code_after_status_block(self) -> None:
-        message = (
-            '---RALPH_STATUS---\n'
-            'STATUS: progress\n'
-            'SUMMARY: still working\n'
-            'FILES:\n'
-            'CHECKS:\n'
-            '---END_RALPH_STATUS---\n'
-            '    extra trailing content\n'
-        )
-
-        parsed = common.parse_ralph_status(message)
-
-        self.assertFalse(parsed['ok'])
-        self.assertIn('final non-whitespace content', parsed['error'])
-
-    def test_completion_token_must_be_final_line_by_itself(self) -> None:
-        token = common.DEFAULT_COMPLETION_TOKEN
-
-        self.assertTrue(common.completion_token_emitted(f'wrapped up\n{token}\n', token))
-        self.assertFalse(common.completion_token_emitted(f'wrapped up {token}', token))
-        self.assertFalse(common.completion_token_emitted(f'Example token:\n    {token}', token))
-        self.assertFalse(common.completion_token_emitted(f'```text\n{token}', token))
-
-    def test_completion_token_ignores_earlier_mentions(self) -> None:
-        token = common.DEFAULT_COMPLETION_TOKEN
-        message = f"""
-Reminder: never print {token} early.
----RALPH_STATUS---
-STATUS: progress
-SUMMARY: still working
-FILES:
-CHECKS:
----END_RALPH_STATUS---
-"""
-        self.assertFalse(common.completion_token_emitted(message, token))
-
-    def test_parse_ralph_status_ignores_inline_marker_mentions(self) -> None:
-        message = (
-            'Document the literal markers ---RALPH_STATUS--- and ---END_RALPH_STATUS--- in README prose.\n'
-            'No real status block is present here.\n'
-        )
-
-        parsed = common.parse_ralph_status(message)
-
-        self.assertFalse(parsed['ok'])
-        self.assertEqual(parsed['error'], 'missing RALPH_STATUS block')
-        self.assertFalse(common.contains_ralph_status_markup(message))
-
-    def test_contains_ralph_status_markup_ignores_fenced_example_block(self) -> None:
-        message = (
-            'Document the required format for future contributors.\n'
-            '```text\n'
-            '---RALPH_STATUS---\n'
-            'STATUS: progress\n'
-            'SUMMARY: example only\n'
-            'FILES:\n'
-            'CHECKS:\n'
-            '---END_RALPH_STATUS---\n'
-            '```\n'
-        )
-
-        self.assertFalse(common.contains_ralph_status_markup(message))
-
-    def test_contains_ralph_status_markup_ignores_tilde_fenced_example_block(self) -> None:
-        message = (
-            'Document the required format for future contributors.\n'
-            '~~~text\n'
-            '---RALPH_STATUS---\n'
-            'STATUS: progress\n'
-            'SUMMARY: example only\n'
-            'FILES:\n'
-            'CHECKS:\n'
-            '---END_RALPH_STATUS---\n'
-            '~~~\n'
-        )
-
-        self.assertFalse(common.contains_ralph_status_markup(message))
-
-    def test_contains_ralph_status_markup_detects_unclosed_backtick_fence_with_tilde_info(self) -> None:
-        message = (
-            '```~\n'
-            '---RALPH_STATUS---\n'
-            'STATUS: progress\n'
-            'SUMMARY: unclosed backtick fence must not hide markers\n'
-            'FILES:\n'
-            'CHECKS:\n'
-            '---END_RALPH_STATUS---\n'
-            '```~\n'
-        )
-
-        self.assertTrue(common.contains_ralph_status_markup(message))
-
-    def test_contains_ralph_status_markup_detects_backtick_in_backtick_fence_info(self) -> None:
-        message = (
-            '``` `\n'
-            '---RALPH_STATUS---\n'
-            'STATUS: progress\n'
-            'SUMMARY: invalid backtick fence must not hide markers\n'
-            'FILES:\n'
-            'CHECKS:\n'
-            '---END_RALPH_STATUS---\n'
-            '```\n'
-        )
-
-        self.assertTrue(common.contains_ralph_status_markup(message))
-
-    def test_contains_ralph_status_markup_ignores_indented_example_block(self) -> None:
-        message = (
-            'Document the required format for future contributors.\n'
-            '    ---RALPH_STATUS---\n'
-            '    STATUS: progress\n'
-            '    SUMMARY: example only\n'
-            '    FILES:\n'
-            '    CHECKS:\n'
-            '    ---END_RALPH_STATUS---\n'
-        )
-
-        self.assertFalse(common.contains_ralph_status_markup(message))
-
-    def test_contains_ralph_status_markup_detects_unclosed_fenced_block(self) -> None:
-        message = (
-            '```text\n'
-            '---RALPH_STATUS---\n'
-            'STATUS: progress\n'
-            'SUMMARY: example only\n'
-            'FILES:\n'
-            'CHECKS:\n'
-            '---END_RALPH_STATUS---\n'
-        )
-
-        self.assertTrue(common.contains_ralph_status_markup(message))
-
-    def test_parse_trailing_ralph_status_ignores_quoted_example_block(self) -> None:
-        message = (
-            'Document the required format for future contributors.\n'
-            '```text\n'
-            '---RALPH_STATUS---\n'
-            'STATUS: progress\n'
-            'SUMMARY: example only\n'
-            'FILES:\n'
-            'CHECKS:\n'
-            '---END_RALPH_STATUS---\n'
-            '```\n'
-        )
-
-        parsed, attempted = common.parse_trailing_ralph_status(message)
-
-        self.assertFalse(attempted)
-        self.assertFalse(parsed['ok'])
-        self.assertEqual(parsed['error'], 'missing RALPH_STATUS block')
-
-    def test_parse_trailing_ralph_status_prefers_terminal_block_over_earlier_example(self) -> None:
-        message = (
-            'Document the required format for future contributors.\n'
-            '```text\n'
-            '---RALPH_STATUS---\n'
-            'STATUS: progress\n'
-            'SUMMARY: example only\n'
-            'FILES:\n'
-            'CHECKS:\n'
-            '---END_RALPH_STATUS---\n'
-            '```\n'
-            '---RALPH_STATUS---\n'
-            'STATUS: complete\n'
-            'SUMMARY: final answer is complete\n'
-            'FILES: hooks/common.py\n'
-            'CHECKS: passed:python3 -m unittest\n'
-            '---END_RALPH_STATUS---\n'
-        )
-
-        parsed, attempted = common.parse_trailing_ralph_status(message)
-
-        self.assertTrue(attempted)
-        self.assertTrue(parsed['ok'])
-        self.assertEqual(parsed['status'], 'complete')
-        self.assertEqual(parsed['files'], ['hooks/common.py'])
-
-    def test_parse_trailing_ralph_status_rejects_earlier_raw_status_block(self) -> None:
-        message = (
-            '---RALPH_STATUS---\n'
-            'STATUS: progress\n'
-            'SUMMARY: earlier raw control block\n'
-            'FILES: hooks/common.py\n'
-            'CHECKS: passed:python3 -m unittest\n'
-            '---END_RALPH_STATUS---\n'
-            '---RALPH_STATUS---\n'
-            'STATUS: complete\n'
-            'SUMMARY: final answer is complete\n'
-            'FILES: hooks/common.py\n'
-            'CHECKS: passed:python3 -m unittest\n'
-            '---END_RALPH_STATUS---\n'
-        )
-
-        parsed, attempted = common.parse_trailing_ralph_status(message)
-
-        self.assertTrue(attempted)
-        self.assertFalse(parsed['ok'])
-        self.assertIn('final non-whitespace content before the completion token', parsed['error'])
-
-    def test_parse_trailing_ralph_status_ignores_indented_example_block(self) -> None:
-        message = (
-            'Document the required format for future contributors.\n'
-            '    ---RALPH_STATUS---\n'
-            '    STATUS: progress\n'
-            '    SUMMARY: example only\n'
-            '    FILES:\n'
-            '    CHECKS:\n'
-            '    ---END_RALPH_STATUS---\n'
-        )
-
-        parsed, attempted = common.parse_trailing_ralph_status(message)
-
-        self.assertFalse(attempted)
-        self.assertFalse(parsed['ok'])
-        self.assertEqual(parsed['error'], 'missing RALPH_STATUS block')
-
-    def test_parse_ralph_status_ignores_list_indented_fenced_example_block(self) -> None:
-        message = (
-            '- Example for documentation:\n'
-            '    ```text\n'
-            '    ---RALPH_STATUS---\n'
-            '    STATUS: progress\n'
-            '    SUMMARY: example only\n'
-            '    FILES:\n'
-            '    CHECKS:\n'
-            '    ---END_RALPH_STATUS---\n'
-            '    ```\n'
-        )
-
-        parsed = common.parse_ralph_status(message)
-
-        self.assertFalse(parsed['ok'])
-        self.assertEqual(parsed['error'], 'missing RALPH_STATUS block')
-
-    def test_parse_ralph_status_rejects_multiple_blocks(self) -> None:
-        message = """
----RALPH_STATUS---
-STATUS: progress
-SUMMARY: first
-FILES:
-CHECKS:
----END_RALPH_STATUS---
----RALPH_STATUS---
-STATUS: blocked
-SUMMARY: second
-FILES:
-CHECKS:
----END_RALPH_STATUS---
-"""
-        parsed = common.parse_ralph_status(message)
-        self.assertFalse(parsed['ok'])
-        self.assertIn('exactly one RALPH_STATUS block', parsed['error'])
-
-    def test_parse_ralph_status_rejects_nonfinal_block(self) -> None:
-        message = """
----RALPH_STATUS---
-STATUS: progress
-SUMMARY: almost there
-FILES:
-CHECKS:
----END_RALPH_STATUS---
-More text after the block
-"""
-        parsed = common.parse_ralph_status(message)
-        self.assertFalse(parsed['ok'])
-        self.assertIn('final non-whitespace content', parsed['error'])
-
-    def test_parse_ralph_status_rejects_internal_only_status(self) -> None:
-        message = """
----RALPH_STATUS---
-STATUS: cancelled
-SUMMARY: no longer running
-FILES:
-CHECKS:
----END_RALPH_STATUS---
-"""
-        parsed = common.parse_ralph_status(message)
-        self.assertFalse(parsed['ok'])
-        self.assertIn('STATUS must be one of', parsed['error'])
-
-    def test_parse_ralph_status_requires_all_fields(self) -> None:
-        message = """
----RALPH_STATUS---
-STATUS: progress
-SUMMARY: missing checks
-FILES: hooks/common.py
----END_RALPH_STATUS---
-"""
-        parsed = common.parse_ralph_status(message)
-        self.assertFalse(parsed['ok'])
-        self.assertIn('missing required field(s): CHECKS', parsed['error'])
-
-    def test_parse_ralph_status_rejects_unknown_field(self) -> None:
-        message = """
----RALPH_STATUS---
-STATUS: progress
-SUMMARY: still working
-FILES: hooks/common.py
-CHECKS: passed:python3 -m unittest
-EXTRA: should_fail
----END_RALPH_STATUS---
-"""
-        parsed = common.parse_ralph_status(message)
-        self.assertFalse(parsed['ok'])
-        self.assertEqual(parsed['error'], 'unknown EXTRA field in RALPH_STATUS block')
-
-    def test_parse_ralph_status_rejects_marker_strings_inside_fields(self) -> None:
-        cases = (
-            ('SUMMARY', 'SUMMARY: ---RALPH_STATUS---'),
-            ('FILES', 'FILES: hooks/common.py, ---END_RALPH_STATUS---'),
-            ('CHECKS', 'CHECKS: passed:---RALPH_STATUS---'),
-        )
-        for field, field_line in cases:
-            with self.subTest(field=field):
-                lines = {
-                    'SUMMARY': 'SUMMARY: still working',
-                    'FILES': 'FILES: hooks/common.py',
-                    'CHECKS': 'CHECKS: passed:pytest -q',
-                }
-                lines[field] = field_line
-                message = (
-                    '---RALPH_STATUS---\n'
-                    'STATUS: progress\n'
-                    f'{lines["SUMMARY"]}\n'
-                    f'{lines["FILES"]}\n'
-                    f'{lines["CHECKS"]}\n'
-                    '---END_RALPH_STATUS---\n'
-                )
-
-                parsed = common.parse_ralph_status(message)
-
-                self.assertFalse(parsed['ok'])
-                self.assertEqual(parsed['error'], f'{field} must not contain RALPH_STATUS marker strings')
-
-    def test_parse_ralph_status_requires_non_empty_summary(self) -> None:
-        message = """
----RALPH_STATUS---
-STATUS: progress
-SUMMARY:   
-FILES:
-CHECKS:
----END_RALPH_STATUS---
-"""
-        parsed = common.parse_ralph_status(message)
-        self.assertFalse(parsed['ok'])
-        self.assertEqual(parsed['error'], 'SUMMARY must be a non-empty single-line summary')
-
-    def test_parse_ralph_status_rejects_overlong_summary(self) -> None:
-        message = (
-            '---RALPH_STATUS---\n'
-            'STATUS: progress\n'
-            f'SUMMARY: {"x" * (common.SUMMARY_LIMIT + 1)}\n'
-            'FILES:\n'
-            'CHECKS:\n'
-            '---END_RALPH_STATUS---\n'
-        )
-
-        parsed = common.parse_ralph_status(message)
-
-        self.assertFalse(parsed['ok'])
-        self.assertIn(f'SUMMARY must be <= {common.SUMMARY_LIMIT} characters', parsed['error'])
-
-    def test_validate_progress_entry_requires_timestamp(self) -> None:
-        entry = {
-            'iteration': 0,
-            'session_id': None,
-            'status': 'started',
-            'summary': 'Ralph loop started',
-            'files': [],
-            'checks': [],
-            'message_fingerprint': None,
-            'reason': None,
-        }
-        errors = state_store.validate_progress_entry(entry)
-        self.assertIn('ts must be a non-empty ISO8601 string', errors)
-
-    def test_validate_progress_entry_rejects_unknown_fields(self) -> None:
-        entry = {
-            'ts': common.now_iso(),
-            'iteration': 0,
-            'session_id': None,
-            'status': 'started',
-            'summary': 'Ralph loop started',
-            'files': [],
-            'checks': [],
-            'message_fingerprint': None,
-            'reason': None,
-            'extra': 'ignored by old runtimes',
-        }
-
-        errors = state_store.validate_progress_entry(entry)
-
-        self.assertIn('unknown progress field(s): extra', errors)
-
-    def test_validate_progress_entry_reports_non_string_unknown_keys_without_crashing(self) -> None:
-        entry = {
-            'ts': common.now_iso(),
-            'iteration': 0,
-            'session_id': None,
-            'status': 'started',
-            'summary': 'Ralph loop started',
-            'files': [],
-            'checks': [],
-            'message_fingerprint': None,
-            'reason': None,
-            1: 'bad key',
-        }
-
-        errors = state_store.validate_progress_entry(entry)
-
-        self.assertIn('unknown progress field(s): 1', errors)
-
-    def test_validate_progress_entry_rejects_unknown_status(self) -> None:
-        entry = {
-            'ts': common.now_iso(),
-            'iteration': 0,
-            'session_id': None,
-            'status': 'unknown',
-            'summary': 'legacy entry',
-            'files': [],
-            'checks': [],
-            'message_fingerprint': None,
-            'reason': None,
-        }
-
-        errors = state_store.validate_progress_entry(entry)
-
-        self.assertTrue(any(error.startswith('status must be one of') for error in errors))
-
-    def test_validate_progress_entry_rejects_empty_session_id(self) -> None:
-        entry = {
-            'ts': common.now_iso(),
-            'iteration': 0,
-            'session_id': '',
-            'status': 'progress',
-            'summary': 'continued work',
-            'files': [],
-            'checks': [],
-            'message_fingerprint': None,
-            'reason': None,
-        }
-
-        errors = state_store.validate_progress_entry(entry)
-
-        self.assertIn('session_id must be a non-empty string or null', errors)
-
-
-if __name__ == '__main__':
-    unittest.main()

@@ -48,7 +48,7 @@ Runtime behavior is split cleanly:
 - `$ralph-loop` refuses to overwrite an existing active or invalid state file; use `$continue-ralph-loop` to resume or `$cancel-ralph` before starting over.
 - `$continue-ralph-loop` resumes an existing active loop explicitly and can reclaim a stale `phase="running"` state after a crash or restart, even if the prior session never persisted a claim.
 - `$doctor-ralph` validates installation and workspace state.
-- The `Stop` hook keeps unfinished `phase="running"` loops moving until the completion token is emitted on the final non-whitespace line by itself, pauses recoverable stops in-place, and clears state only on completion or the iteration cap.
+- The `Stop` hook keeps unfinished `phase="running"` loops moving by default, consumes explicit state updates written by Ralph's packaged report script, pauses recoverable stops in-place, and clears state only on completion, cancellation, or the iteration cap.
 
 ## Python dependency
 
@@ -97,37 +97,33 @@ bash ./skills/uninstall-ralph/scripts/uninstall_ralph.sh
 
 - Active control state: `.codex/ralph/state.json`
 - Append-only progress ledger: `.codex/ralph/progress.jsonl`
-- State files must use `schema_version = 1`.
+- State files must use `schema_version = 3`.
 - Ralph validates state, progress, and hook registry files strictly. Malformed or old-schema files stop the loop or fail `$doctor-ralph`; they are never auto-repaired by silently filling defaults.
 
-Recoverable stops keep `.codex/ralph/state.json` in place and set `phase` to `blocked`.
+Recoverable stops keep `.codex/ralph/state.json` in place and set `phase` to `blocked` or `failed`.
 Use `$continue-ralph-loop` to resume that paused loop explicitly.
 That same command also reclaims a stale running state when Codex crashed or restarted mid-loop, including the window before a session claim was written.
 If you want to abandon the current loop and start fresh, run `$cancel-ralph` before `$ralph-loop`.
 
-A completed Ralph turn must place `<promise>DONE</promise>` on the final non-whitespace line by itself.
-If a completed turn also includes a `RALPH_STATUS` block, it must be immediately before that token and report `STATUS: complete`.
-Raw non-terminal `RALPH_STATUS` marker lines are rejected; put protocol examples inside Markdown code blocks.
+Ralph does not read control state from assistant prose anymore.
+If the task should keep going, reply normally and do not touch Ralph state.
+If the turn should stop Ralph, first run:
 
-Every unfinished Ralph turn must end with exactly one status block as its final non-whitespace content:
-
-```text
----RALPH_STATUS---
-STATUS: progress|no_progress|blocked|complete
-SUMMARY: <non-empty single-line summary, 200 chars max>
-FILES: path/a, path/b
-CHECKS: passed:npm test; failed:pytest -q
----END_RALPH_STATUS---
+```bash
+bash "${AGENTS_HOME:-$HOME/.agents}/skills/ralph-loop/scripts/report_ralph.sh" \
+  --status <progress|blocked|failed|complete> \
+  --summary "single-line summary" \
+  [--reason "required for blocked/failed"] \
+  [--file path/to/file]... \
+  [--check "passed:pytest -q"]...
 ```
 
-If the block is missing or malformed, Ralph stops instead of silently continuing.
-Use exactly those four fields and no extras.
-
-`FILES` is parsed by splitting on commas and `CHECKS` is parsed by splitting on semicolons.
-Do not put a literal comma inside one `FILES` item or a literal semicolon inside one `CHECKS` item.
-Do not include the literal status markers inside `SUMMARY`, `FILES`, or `CHECKS`.
+The report script binds the update to the current Codex session using
+`RALPH_SESSION_ID`, `CODEX_SESSION_ID`, or `CODEX_THREAD_ID`; pass
+`--session-id` only when integrating another host that supplies the Stop hook
+session id differently.
 
 `max_iterations = N` means Ralph may emit up to `N` continuation prompts.
-If the `N`th continued assistant turn still does not emit the completion token, the Stop hook records that turn and then stops the loop.
+If the `N`th continued assistant turn still has no terminal report, the Stop hook records that turn and then stops the loop.
 
 Use `$doctor-ralph` if skills, hooks, state, or progress files look wrong.

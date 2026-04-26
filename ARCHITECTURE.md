@@ -49,12 +49,12 @@ codex-ralph-loop/
     __init__.py
     model.py                      # state, event, decision, effect types
     reducer.py                    # pure loop state machine
-    protocol.py                   # completion token and RALPH_STATUS parser
+    protocol.py                   # message fingerprinting and summary helpers
     storage.py                    # safe paths, lock, atomic persistence
     effects.py                    # apply reducer effects to storage
     prompts.py                    # continuation prompt builder
     runtime.py                    # Stop-hook runtime orchestration
-    control.py                    # start/resume/cancel workspace CLI
+    control.py                    # start/resume/report/cancel workspace CLI
     errors.py                     # runtime error taxonomy
 
   profile/
@@ -92,7 +92,7 @@ installation.
 
 It should not:
 
-- parse `RALPH_STATUS`;
+- parse assistant control prose;
 - know state compatibility rules;
 - edit `hooks.json`, or installed hook files;
 - contain the loop state machine;
@@ -100,21 +100,16 @@ It should not:
 
 ### Ralph Protocol
 
-`ralph_core/protocol.py` owns assistant-output parsing.
+`ralph_core/protocol.py` owns assistant-message normalization helpers.
 
 ```text
-last_assistant_message + completion_token -> ProtocolResult
+last_assistant_message -> fingerprint + fallback summary
 ```
 
 It handles:
 
-- final-line completion-token detection;
-- optional terminal `RALPH_STATUS` block before the completion token;
-- unfinished-turn `RALPH_STATUS` parsing;
-- Markdown fenced and indented code masking;
-- CRLF line endings;
-- malformed, duplicated, misplaced, or non-final status blocks;
-- fallback progress details for invalid output.
+- whitespace-normalized summaries for fallback progress rows;
+- stable message fingerprinting for repeated-response detection.
 
 This layer does not know about sessions, locks, files, hooks, or installation.
 
@@ -123,7 +118,7 @@ This layer does not know about sessions, locks, files, hooks, or installation.
 `ralph_core/reducer.py` is the core domain model.
 
 ```text
-LoopState + StopEvent + ProtocolResult -> Decision
+LoopState + StopEvent -> Decision
 ```
 
 The reducer should be pure or close to pure. It returns decisions and effects,
@@ -131,7 +126,7 @@ but does not read or write files.
 
 Typical decisions:
 
-- `Noop`: no active running loop, inactive state, blocked state, or session
+- `Noop`: no active running loop, blocked/failed state, or session
   mismatch.
 - `ContinueLoop`: append progress, advance iteration, save next state, and emit
   a continuation prompt.
@@ -160,14 +155,14 @@ State should include a schema version:
 
 ```json
 {
-  "schema_version": 1,
-  "active": true,
+  "schema_version": 3,
   "phase": "running",
   "iteration": 0,
   "max_iterations": 100,
-  "completion_token": "<promise>DONE</promise>",
   "prompt": "...",
   "claimed_session_id": null,
+  "pending_update": null,
+  "last_status": null,
   "last_message_fingerprint": null,
   "repeat_count": 0,
   "started_at": "...",
@@ -241,7 +236,7 @@ Stop payload
   -> validate session_id and last_assistant_message
   -> acquire bounded workspace lock
   -> re-read state
-  -> parse assistant protocol
+  -> consume pending_update only when bound to the same session
   -> reduce event
   -> apply effects
   -> render Codex response
@@ -253,8 +248,9 @@ Stop hook may race with the first read.
 ### Continue
 
 ```text
-assistant did not emit completion token
-  -> valid STATUS=progress or STATUS=no_progress
+no terminal pending_update exists
+  -> use explicit progress report if present, else fallback summary
+  -> compare repeat counter against message + progress-report fingerprint
   -> append progress row
   -> increment iteration
   -> save state
@@ -264,8 +260,7 @@ assistant did not emit completion token
 ### Complete
 
 ```text
-assistant final non-whitespace line equals completion token
-  -> optional terminal status block must report STATUS=complete
+pending_update.status == complete
   -> clear state
   -> append completion progress row
   -> return no continuation
@@ -274,9 +269,8 @@ assistant final non-whitespace line equals completion token
 ### Pause
 
 ```text
-malformed status block
-blocked status
-completion/status mismatch
+pending_update.status == blocked
+pending_update.status == failed
 repeated response circuit
 storage error
   -> save phase="blocked" when state is still valid
@@ -319,8 +313,13 @@ The following policies are part of the architecture:
 - Lock timeout: stop the hook and report a lock timeout.
 - Session mismatch: no-op.
 - Missing `session_id` while state is running: stop cleanly without mutation.
+- Pending updates are session-bound. `report_loop` claims an unclaimed running
+  loop for the reporting session and rejects reports from any other session
+  once claimed. Trade-off: first reporter wins before the first Stop hook
+  persists a claim; after that point stale reports cannot overwrite or complete
+  the claimed session's loop.
 - `max_iterations` reached: terminal stop and clear state.
-- Completion token plus non-complete status: pause for explicit repair/resume.
+- Stale or malformed pending update: fail closed and require explicit repair.
 - Profile registry unreadable during uninstall: fail closed before deleting hook
   files that may still be referenced.
 - Readable but invalid profile registry during uninstall: remove local managed
@@ -330,12 +329,10 @@ The following policies are part of the architecture:
 
 Tests should align with the architectural layers:
 
-- protocol tests: status block parsing, Markdown masking, CRLF, completion token
-  placement, malformed examples;
-- reducer tests: decision matrix for running, blocked, inactive, session
-  mismatch, completion, continuation, max iterations, repeated responses;
+- reducer tests: decision matrix for running, blocked, failed, session
+  mismatch, report-driven completion, continuation, max iterations, repeated responses;
 - storage tests: symlink policy, lock timeout, atomic write behavior, schema
-  upgrade handling, invalid progress ledger handling;
+  validation, invalid progress ledger handling;
 - adapter tests: Codex payload validation, missing-state no-op contract, JSON
   response rendering;
 - profile tests: install idempotency, hook registry repair, uninstall fail-closed

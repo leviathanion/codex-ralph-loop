@@ -13,16 +13,20 @@ from typing import Any, Literal, cast
 
 from ralph_core.errors import StorageError
 from ralph_core.model import (
-    ALLOWED_PHASES,
-    DEFAULT_COMPLETION_TOKEN,
     DEFAULT_MAX_ITERATIONS,
+    ACTIVE_PHASES,
+    ASSISTANT_PROGRESS_STATUSES,
     LOCK_RELATIVE_PATH,
     LEDGER_PROGRESS_STATUSES,
+    PendingUpdate,
     PROGRESS_RELATIVE_PATH,
     SCHEMA_VERSION,
+    SUMMARY_LIMIT,
     STATE_RELATIVE_PATH,
     LoopState,
     ProgressEntry,
+    StatusSnapshot,
+    now_iso,
 )
 
 
@@ -236,15 +240,15 @@ def _write_text_atomic(path: Path, contents: str) -> None:
 def default_state() -> LoopState:
     return {
         'schema_version': SCHEMA_VERSION,
-        'active': False,
         'prompt': '',
         'iteration': 0,
         'max_iterations': DEFAULT_MAX_ITERATIONS,
-        'completion_token': DEFAULT_COMPLETION_TOKEN,
         'claimed_session_id': None,
         'phase': 'running',
-        'started_at': None,
-        'updated_at': None,
+        'pending_update': None,
+        'last_status': None,
+        'started_at': now_iso(),
+        'updated_at': now_iso(),
         'last_message_fingerprint': None,
         'repeat_count': 0,
     }
@@ -273,6 +277,88 @@ def _validate_iso(value: Any, field: str, *, allow_null: bool) -> list[str]:
     return []
 
 
+def _validate_summary(value: Any, field: str) -> list[str]:
+    if not isinstance(value, str):
+        return [f'{field} must be a string']
+    normalized = ' '.join(value.split())
+    if not normalized:
+        return [f'{field} must be a non-empty string']
+    if len(normalized) > SUMMARY_LIMIT:
+        return [f'{field} must be <= {SUMMARY_LIMIT} characters after whitespace normalization']
+    return []
+
+
+def _validate_string_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        return [f'{field} must be a list of strings']
+    return []
+
+
+def _validate_reason(value: Any, field: str, *, required: bool) -> list[str]:
+    if value is None:
+        if required:
+            return [f'{field} must be a non-empty string']
+        return []
+    if not isinstance(value, str) or not value.strip():
+        return [f'{field} must be a non-empty string']
+    return []
+
+
+def validate_status_snapshot(
+    data: Any,
+    *,
+    prefix: str = 'status',
+    allow_complete: bool = True,
+    allowed_fields: frozenset[str] | None = None,
+) -> list[str]:
+    if data is None:
+        return []
+    if not isinstance(data, dict):
+        return [f'{prefix} must be a JSON object or null']
+
+    errors: list[str] = []
+    allowed_statuses = ASSISTANT_PROGRESS_STATUSES if allow_complete else (ASSISTANT_PROGRESS_STATUSES - {'complete'})
+    unknown_fields_error = unknown_field_error(
+        prefix,
+        data,
+        allowed_fields if allowed_fields is not None else frozenset(StatusSnapshot.__annotations__),
+    )
+    if unknown_fields_error is not None:
+        errors.append(unknown_fields_error)
+
+    status = data.get('status')
+    if not isinstance(status, str) or status not in allowed_statuses:
+        errors.append(f'{prefix}.status must be one of {sorted(allowed_statuses)}')
+    errors.extend(_validate_summary(data.get('summary'), f'{prefix}.summary'))
+    errors.extend(_validate_string_list(data.get('files'), f'{prefix}.files'))
+    errors.extend(_validate_string_list(data.get('checks'), f'{prefix}.checks'))
+    errors.extend(_validate_reason(data.get('reason'), f'{prefix}.reason', required=status in {'blocked', 'failed'}))
+    errors.extend(_validate_iso(data.get('updated_at'), f'{prefix}.updated_at', allow_null=False))
+    return errors
+
+
+def validate_pending_update(data: Any) -> list[str]:
+    if data is None:
+        return []
+    if not isinstance(data, dict):
+        return ['pending_update must be a JSON object or null']
+
+    errors = validate_status_snapshot(
+        data,
+        prefix='pending_update',
+        allowed_fields=frozenset(PendingUpdate.__annotations__),
+    )
+    iteration = data.get('iteration')
+    if type(iteration) is not int:
+        errors.append('pending_update.iteration must be an integer')
+    elif iteration < 0:
+        errors.append('pending_update.iteration must be >= 0')
+    session_id = data.get('session_id')
+    if not isinstance(session_id, str) or not session_id:
+        errors.append('pending_update.session_id must be a non-empty string')
+    return errors
+
+
 def validate_state_payload(data: Any) -> list[str]:
     if not isinstance(data, dict):
         return ['state must be a JSON object']
@@ -289,12 +375,9 @@ def validate_state_payload(data: Any) -> list[str]:
     if schema_version != SCHEMA_VERSION:
         errors.append(f'schema_version must be {SCHEMA_VERSION}')
 
-    if type(data.get('active')) is not bool:
-        errors.append('active must be a boolean')
-
     prompt = data.get('prompt')
-    if not isinstance(prompt, str):
-        errors.append('prompt must be a string')
+    if not isinstance(prompt, str) or not prompt.strip():
+        errors.append('prompt must be a non-empty string')
 
     iteration = data.get('iteration')
     if type(iteration) is not int:
@@ -308,15 +391,6 @@ def validate_state_payload(data: Any) -> list[str]:
     elif max_iterations < 1:
         errors.append('max_iterations must be >= 1')
 
-    completion_token = data.get('completion_token')
-    if not isinstance(completion_token, str) or not completion_token.strip():
-        errors.append('completion_token must be a non-empty string')
-    elif completion_token != completion_token.strip() or len(completion_token.splitlines()) != 1:
-        # Trade-off: Ralph allows custom completion tokens, including internal spaces, but the
-        # Stop hook compares one trimmed final line. Reject surrounding whitespace and line
-        # separators at the schema boundary so users cannot start a loop that can never complete.
-        errors.append('completion_token must be a single-line string without leading or trailing whitespace')
-
     claimed_session_id = data.get('claimed_session_id')
     if claimed_session_id is not None and (not isinstance(claimed_session_id, str) or not claimed_session_id):
         # Trade-off: reject empty persisted claims even though they are strings. Stop-hook payload
@@ -325,11 +399,26 @@ def validate_state_payload(data: Any) -> list[str]:
         errors.append('claimed_session_id must be a non-empty string or null')
 
     phase = data.get('phase')
-    if not isinstance(phase, str) or phase not in ALLOWED_PHASES:
-        errors.append(f'phase must be one of {sorted(ALLOWED_PHASES)}')
+    if not isinstance(phase, str) or phase not in ACTIVE_PHASES:
+        errors.append(f'phase must be one of {sorted(ACTIVE_PHASES)}')
 
-    errors.extend(_validate_iso(data.get('started_at'), 'started_at', allow_null=True))
-    errors.extend(_validate_iso(data.get('updated_at'), 'updated_at', allow_null=True))
+    pending_update = data.get('pending_update')
+    errors.extend(validate_pending_update(pending_update))
+    last_status = data.get('last_status')
+    errors.extend(validate_status_snapshot(last_status, prefix='last_status'))
+    if isinstance(pending_update, dict) and type(iteration) is int and pending_update.get('iteration') != iteration:
+        errors.append('pending_update.iteration must match state iteration')
+    if isinstance(pending_update, dict) and claimed_session_id is None:
+        errors.append('pending_update requires claimed_session_id')
+    if (
+        isinstance(pending_update, dict)
+        and isinstance(claimed_session_id, str)
+        and pending_update.get('session_id') != claimed_session_id
+    ):
+        errors.append('pending_update.session_id must match claimed_session_id')
+
+    errors.extend(_validate_iso(data.get('started_at'), 'started_at', allow_null=False))
+    errors.extend(_validate_iso(data.get('updated_at'), 'updated_at', allow_null=False))
 
     last_message_fingerprint = data.get('last_message_fingerprint')
     if last_message_fingerprint is not None and not isinstance(last_message_fingerprint, str):

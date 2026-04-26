@@ -21,24 +21,22 @@ EOF
 3. If the script fails, surface the error to the user instead of inventing or partially repairing Ralph state by hand.
    If it reports an existing active loop, tell the user to use `$continue-ralph-loop` or `$cancel-ralph` before starting a new loop.
 4. Begin working on the task immediately.
-5. Every unfinished assistant response must end with exactly one status block as its final non-whitespace content:
+5. If the task should keep going, reply normally and do not hand-edit Ralph state.
+6. If the turn must stop Ralph, run the packaged report script before your final response:
 
-```text
----RALPH_STATUS---
-STATUS: progress|no_progress|blocked|complete
-SUMMARY: <non-empty single-line summary, 200 chars max>
-FILES: path/a, path/b
-CHECKS: passed:npm test; failed:pytest -q
----END_RALPH_STATUS---
+```bash
+bash "${AGENTS_HOME:-$HOME/.agents}/skills/ralph-loop/scripts/report_ralph.sh" \
+  --status <progress|blocked|failed|complete> \
+  --summary "single-line summary" \
+  [--reason "required for blocked/failed"] \
+  [--file path/to/file]... \
+  [--check "passed:pytest -q"]...
 ```
 
-6. Only output `<promise>DONE</promise>` when the task is fully and verifiably complete.
-   Put the token on the final non-whitespace line by itself.
-   If you also include a `RALPH_STATUS` block, it must be immediately before that token and report `STATUS: complete`.
-   If an unfinished-turn status block is missing or malformed, Ralph will stop instead of silently continuing.
-7. Use exactly those four fields and no extras.
-8. `FILES` is split on commas and `CHECKS` is split on semicolons. Do not put a literal comma inside one file item or a literal semicolon inside one check item; split or summarize instead.
-9. Do not include the literal status markers inside `SUMMARY`, `FILES`, or `CHECKS`.
+7. `--summary` must be a truthful single-line summary. Use repeatable `--file` and `--check` flags for changed files and verification evidence.
+8. `--reason` is required for `blocked` and `failed`.
+9. Use `complete` only when the task is fully and verifiably complete.
+10. If you do not report a terminal status, Ralph will continue automatically after the Stop hook fires.
 
 ## Preconditions
 

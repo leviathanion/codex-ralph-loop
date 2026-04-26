@@ -7,7 +7,7 @@ ROOT_DIR="$(cd -- "${SELF_DIR}/../../.." && pwd -P)"
 FORWARDED_ARGS=()
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
-    --max-iterations|--completion-token)
+    --max-iterations)
       if [[ "$#" -lt 2 ]]; then
         echo "missing value for $1" >&2
         exit 2
@@ -15,7 +15,7 @@ while [[ "$#" -gt 0 ]]; do
       FORWARDED_ARGS+=("$1" "$2")
       shift 2
       ;;
-    --max-iterations=*|--completion-token=*)
+    --max-iterations=*)
       FORWARDED_ARGS+=("$1")
       shift
       ;;

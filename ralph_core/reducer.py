@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
+
 from ralph_core.model import (
     DecisionKind,
     LoopState,
-    ParsedRalphStatus,
+    PendingUpdate,
     ProgressDetails,
     ProgressEntry,
     RuntimeDecision,
@@ -12,14 +14,7 @@ from ralph_core.model import (
     now_iso,
 )
 from ralph_core.prompts import continuation_prompt
-from ralph_core.protocol import (
-    completion_token_emitted,
-    contains_ralph_status_markup,
-    fingerprint_message,
-    parse_ralph_status,
-    parse_trailing_ralph_status,
-    truncate_summary,
-)
+from ralph_core.protocol import fingerprint_message, truncate_summary
 
 
 def stop_response(message: str) -> dict[str, object]:
@@ -71,12 +66,29 @@ def fallback_progress_details(text: str) -> ProgressDetails:
     }
 
 
-def progress_details_from_status(parsed_status: ParsedRalphStatus) -> ProgressDetails:
+def progress_details_from_update(update: PendingUpdate) -> ProgressDetails:
     return {
-        'summary': parsed_status['summary'],
-        'files': parsed_status['files'],
-        'checks': parsed_status['checks'],
+        'summary': update['summary'],
+        'files': update['files'],
+        'checks': update['checks'],
     }
+
+
+def repeat_fingerprint_for_turn(message_fingerprint: str, update: PendingUpdate | None) -> str:
+    if update is None:
+        return message_fingerprint
+    payload = {
+        'message_fingerprint': message_fingerprint,
+        'status': update['status'],
+        'summary': update['summary'],
+        'files': update['files'],
+        'checks': update['checks'],
+        'reason': update['reason'],
+        'session_id': update['session_id'],
+    }
+    # `updated_at` is deliberately excluded: a freshly written but semantically identical
+    # report should still trip the repeated-response circuit after three turns.
+    return fingerprint_message(json.dumps(payload, sort_keys=True, separators=(',', ':')))
 
 
 def save_state_effect(state: LoopState) -> RuntimeEffect:
@@ -91,49 +103,70 @@ def clear_state_effect() -> RuntimeEffect:
     return RuntimeEffect(kind='clear_state')
 
 
-def blocked_state(state: LoopState) -> LoopState:
+def paused_state(
+    state: LoopState,
+    *,
+    phase: str,
+    last_status: PendingUpdate | None,
+    message_fingerprint: str,
+    repeat_count: int,
+) -> LoopState:
     next_state = dict(state)
-    next_state['phase'] = 'blocked'
+    next_state['phase'] = phase
+    next_state['pending_update'] = None
+    if last_status is None:
+        next_state['last_status'] = None
+    else:
+        next_state['last_status'] = {
+            'status': last_status['status'],
+            'summary': last_status['summary'],
+            'files': list(last_status['files']),
+            'checks': list(last_status['checks']),
+            'reason': last_status['reason'],
+            'updated_at': last_status['updated_at'],
+        }
     next_state['updated_at'] = now_iso()
+    next_state['last_message_fingerprint'] = message_fingerprint
+    next_state['repeat_count'] = repeat_count
     return next_state
 
 
-def pause_loop_with_reason(
-    *,
+def continued_state(
     state: LoopState,
-    iteration: int,
-    session_id: str | None,
+    *,
     message_fingerprint: str,
-    details: ProgressDetails,
-    reason: str,
+    repeat_count: int,
+) -> LoopState:
+    next_state = dict(state)
+    next_state['phase'] = 'running'
+    next_state['pending_update'] = None
+    next_state['updated_at'] = now_iso()
+    next_state['iteration'] = state['iteration'] + 1
+    next_state['last_message_fingerprint'] = message_fingerprint
+    next_state['repeat_count'] = repeat_count
+    return next_state
+
+
+def pause_with_entry(
+    state: LoopState,
+    entry: ProgressEntry,
     message: str,
+    *,
+    phase: str,
+    last_status: PendingUpdate | None,
+    message_fingerprint: str,
+    repeat_count: int,
 ) -> RuntimeDecision:
-    # Trade-off: pause first saves blocked control state, then writes the audit row. This can
-    # lose a ledger row if the append fails, but it prevents accidental auto-continuation.
     return RuntimeDecision(
         kind='pause',
         effects=(
-            save_state_effect(blocked_state(state)),
-            append_progress_effect(progress_entry(
-                iteration=iteration,
-                session_id=session_id,
-                status='stopped',
-                summary=details['summary'],
-                files=details['files'],
-                checks=details['checks'],
+            save_state_effect(paused_state(
+                state,
+                phase=phase,
+                last_status=last_status,
                 message_fingerprint=message_fingerprint,
-                reason=reason,
+                repeat_count=repeat_count,
             )),
-        ),
-        response=stop_response(message),
-    )
-
-
-def pause_with_entry(state: LoopState, entry: ProgressEntry, message: str) -> RuntimeDecision:
-    return RuntimeDecision(
-        kind='pause',
-        effects=(
-            save_state_effect(blocked_state(state)),
             append_progress_effect(entry),
         ),
         response=stop_response(message),
@@ -153,9 +186,6 @@ def clear_loop_with_entry(entry: ProgressEntry, *, kind: DecisionKind, message: 
 
 
 def reduce_stop_event(state: LoopState, event: StopEvent) -> RuntimeDecision:
-    if not state['active']:
-        return RuntimeDecision(kind='noop')
-
     if state['phase'] != 'running':
         return RuntimeDecision(kind='noop')
 
@@ -168,85 +198,126 @@ def reduce_stop_event(state: LoopState, event: StopEvent) -> RuntimeDecision:
         claimed_state['claimed_session_id'] = event.session_id
 
     last_assistant_message = event.last_assistant_message
-    parsed_status = parse_ralph_status(last_assistant_message)
     fallback_details = fallback_progress_details(last_assistant_message)
     message_fingerprint = fingerprint_message(last_assistant_message)
     iteration = state['iteration']
     max_iterations = state['max_iterations']
-    token = state['completion_token']
-
-    if completion_token_emitted(last_assistant_message, token):
-        completion_body = '\n'.join(last_assistant_message.rstrip().splitlines()[:-1])
-        completion_status, attempted_status_block = parse_trailing_ralph_status(completion_body)
-        if completion_status['ok'] and completion_status['status'] != 'complete':
-            return pause_loop_with_reason(
-                state=claimed_state,
-                iteration=iteration,
-                session_id=event.session_id,
-                message_fingerprint=message_fingerprint,
-                details=progress_details_from_status(completion_status),
-                reason='completion_status_mismatch',
-                message=(
-                    'Ralph paused because the assistant emitted the completion token but the '
-                    f'RALPH_STATUS block reported STATUS={completion_status["status"]}. '
-                    'A completed turn must either omit the status block or report STATUS=complete, '
-                    f'and {token} must be on the final non-whitespace line by itself. '
-                    'Fix the response, then resume with $continue-ralph-loop.'
-                ),
-            )
-        if attempted_status_block and not completion_status['ok']:
-            return pause_loop_with_reason(
-                state=claimed_state,
-                iteration=iteration,
-                session_id=event.session_id,
-                message_fingerprint=message_fingerprint,
-                details=fallback_details,
-                reason='invalid_status_block',
-                message=(
-                    'Ralph paused because the assistant emitted the completion token but the '
-                    f'RALPH_STATUS block was malformed. Details: {completion_status["error"]}. '
-                    'Either remove the status block entirely or fix it so it reports STATUS=complete, '
-                    f'then resume with $continue-ralph-loop. {token} must remain on the final non-whitespace line by itself.'
-                ),
-            )
-        if not attempted_status_block and contains_ralph_status_markup(completion_body):
-            malformed_status = parse_ralph_status(completion_body)
-            status_error = (
-                malformed_status['error']
-                if not malformed_status['ok']
-                else 'RALPH_STATUS block must be the final non-whitespace content before the completion token'
-            )
-            return pause_loop_with_reason(
-                state=claimed_state,
-                iteration=iteration,
-                session_id=event.session_id,
-                message_fingerprint=message_fingerprint,
-                details=fallback_details,
-                reason='invalid_status_block',
-                message=(
-                    'Ralph paused because the assistant emitted the completion token but left '
-                    f'non-terminal RALPH_STATUS markup earlier in the message. Details: {status_error}. '
-                    'Either remove the status block entirely or move it immediately before the completion token '
-                    f'and make it report STATUS=complete, then resume with $continue-ralph-loop. {token} must '
-                    'remain on the final non-whitespace line by itself.'
-                ),
-            )
-        details = progress_details_from_status(completion_status) if completion_status['ok'] else fallback_details
-        return clear_loop_with_entry(
+    pending_update = state['pending_update']
+    if pending_update is not None and pending_update['iteration'] != iteration:
+        details = fallback_details
+        return pause_with_entry(
+            claimed_state,
             progress_entry(
                 iteration=iteration,
                 session_id=event.session_id,
-                status='complete',
+                status='stopped',
                 summary=details['summary'],
                 files=details['files'],
                 checks=details['checks'],
                 message_fingerprint=message_fingerprint,
+                reason='stale_pending_update',
             ),
-            kind='complete',
+            (
+                'Ralph paused because the persisted status update does not match the current iteration. '
+                'Inspect .codex/ralph/state.json, then resume with $continue-ralph-loop or discard with $cancel-ralph.'
+            ),
+            phase='blocked',
+            last_status=None,
+            message_fingerprint=message_fingerprint,
+            repeat_count=0,
+        )
+
+    if pending_update is not None:
+        details = progress_details_from_update(pending_update)
+        if pending_update['status'] == 'complete':
+            return clear_loop_with_entry(
+                progress_entry(
+                    iteration=iteration,
+                    session_id=event.session_id,
+                    status='complete',
+                    summary=details['summary'],
+                    files=details['files'],
+                    checks=details['checks'],
+                    message_fingerprint=message_fingerprint,
+                    reason=pending_update['reason'],
+                ),
+                kind='complete',
+            )
+
+        if pending_update['status'] == 'blocked':
+            return pause_with_entry(
+                claimed_state,
+                progress_entry(
+                    iteration=iteration,
+                    session_id=event.session_id,
+                    status='blocked',
+                    summary=details['summary'],
+                    files=details['files'],
+                    checks=details['checks'],
+                    message_fingerprint=message_fingerprint,
+                    reason=pending_update['reason'],
+                ),
+                (
+                    'Ralph paused because the assistant reported a blocking dependency. '
+                    'Resolve the blocker, then resume with $continue-ralph-loop.'
+                ),
+                phase='blocked',
+                last_status=pending_update,
+                message_fingerprint=message_fingerprint,
+                repeat_count=0,
+            )
+
+        if pending_update['status'] == 'failed':
+            return pause_with_entry(
+                claimed_state,
+                progress_entry(
+                    iteration=iteration,
+                    session_id=event.session_id,
+                    status='failed',
+                    summary=details['summary'],
+                    files=details['files'],
+                    checks=details['checks'],
+                    message_fingerprint=message_fingerprint,
+                    reason=pending_update['reason'],
+                ),
+                (
+                    'Ralph paused because the assistant reported a failed verification or unrecoverable issue. '
+                    'Address the failure, then resume with $continue-ralph-loop.'
+                ),
+                phase='failed',
+                last_status=pending_update,
+                message_fingerprint=message_fingerprint,
+                repeat_count=0,
+            )
+
+    repeat_fingerprint = repeat_fingerprint_for_turn(message_fingerprint, pending_update)
+    repeat_count = state['repeat_count'] + 1 if state['last_message_fingerprint'] == repeat_fingerprint else 1
+    details = progress_details_from_update(pending_update) if pending_update is not None else fallback_details
+
+    if repeat_count >= 3:
+        return pause_with_entry(
+            claimed_state,
+            progress_entry(
+                iteration=iteration,
+                session_id=event.session_id,
+                status='stopped',
+                summary=details['summary'],
+                files=details['files'],
+                checks=details['checks'],
+                message_fingerprint=message_fingerprint,
+                reason='repeated_response',
+            ),
+            (
+                'Ralph paused after receiving the same assistant response three times in a row. '
+                'Inspect .codex/ralph/progress.jsonl, then resume with $continue-ralph-loop.'
+            ),
+            phase='blocked',
+            last_status=None,
+            message_fingerprint=repeat_fingerprint,
+            repeat_count=repeat_count,
         )
 
     if iteration >= max_iterations:
-        details = progress_details_from_status(parsed_status) if parsed_status['ok'] else fallback_details
         return clear_loop_with_entry(
             progress_entry(
                 iteration=iteration,
@@ -259,106 +330,27 @@ def reduce_stop_event(state: LoopState, event: StopEvent) -> RuntimeDecision:
                 reason='max_iterations',
             ),
             kind='terminal_stop',
-            message=f'Ralph stopped after reaching max_iterations={max_iterations} without emitting {token}.',
+            message=f'Ralph stopped after reaching max_iterations={max_iterations}.',
         )
 
-    if not parsed_status['ok']:
-        error = parsed_status['error']
-        return pause_loop_with_reason(
-            state=claimed_state,
-            iteration=iteration,
-            session_id=event.session_id,
-            message_fingerprint=message_fingerprint,
-            details=fallback_details,
-            reason='invalid_status_block',
-            message=(
-                'Ralph paused because the assistant response did not end with a valid RALPH_STATUS block. '
-                f'Details: {error}. Fix the response format, then resume with $continue-ralph-loop. '
-                'If you want to discard this loop and start over, run $cancel-ralph before $ralph-loop.'
-            ),
-        )
-
-    if parsed_status['status'] == 'complete':
-        return pause_loop_with_reason(
-            state=claimed_state,
-            iteration=iteration,
-            session_id=event.session_id,
-            message_fingerprint=message_fingerprint,
-            details=progress_details_from_status(parsed_status),
-            reason='missing_completion_token',
-            message=(
-                'Ralph paused because the assistant reported STATUS=complete without emitting '
-                f'{token}. Emit the completion token only when the task is fully done, then resume with $continue-ralph-loop.'
-            ),
-        )
-
-    if parsed_status['status'] == 'blocked':
-        return pause_with_entry(
-            claimed_state,
-            progress_entry(
-                iteration=iteration,
-                session_id=event.session_id,
-                status='blocked',
-                summary=parsed_status['summary'],
-                files=parsed_status['files'],
-                checks=parsed_status['checks'],
-                message_fingerprint=message_fingerprint,
-                reason='awaiting_user_input',
-            ),
-            (
-                'Ralph paused because the assistant reported STATUS=blocked and needs user input. '
-                'Address the blocker, then resume with $continue-ralph-loop. '
-                'If you want to discard this loop and start over, run $cancel-ralph before $ralph-loop.'
-            ),
-        )
-
-    next_state = dict(claimed_state)
-    repeat_count = state['repeat_count']
-    last_message_fingerprint = state['last_message_fingerprint']
-    if last_message_fingerprint == message_fingerprint:
-        repeat_count += 1
-    else:
-        repeat_count = 1
-
-    next_state['last_message_fingerprint'] = message_fingerprint
-    next_state['repeat_count'] = repeat_count
-    next_state['updated_at'] = now_iso()
-
-    if repeat_count >= 3:
-        return pause_with_entry(
-            next_state,
-            progress_entry(
-                iteration=iteration,
-                session_id=event.session_id,
-                status='stopped',
-                summary=parsed_status['summary'],
-                files=parsed_status['files'],
-                checks=parsed_status['checks'],
-                message_fingerprint=message_fingerprint,
-                reason='repeated_response',
-            ),
-            (
-                'Ralph paused after receiving the same assistant response three times in a row. '
-                'Inspect .codex/ralph/progress.jsonl, then resume with $continue-ralph-loop. '
-                'If you want to discard this loop and start over, run $cancel-ralph before $ralph-loop.'
-            ),
-        )
-
-    next_state['phase'] = 'running'
-    next_state['iteration'] = iteration + 1
     return RuntimeDecision(
         kind='continue',
         effects=(
             append_progress_effect(progress_entry(
                 iteration=iteration,
                 session_id=event.session_id,
-                status=parsed_status['status'],
-                summary=parsed_status['summary'],
-                files=parsed_status['files'],
-                checks=parsed_status['checks'],
+                status='progress',
+                summary=details['summary'],
+                files=details['files'],
+                checks=details['checks'],
                 message_fingerprint=message_fingerprint,
+                reason=pending_update['reason'] if pending_update is not None else None,
             )),
-            save_state_effect(next_state),
+            save_state_effect(continued_state(
+                claimed_state,
+                message_fingerprint=repeat_fingerprint,
+                repeat_count=repeat_count,
+            )),
         ),
-        response=block_response(continuation_prompt(state, next_iteration=next_state['iteration'])),
+        response=block_response(continuation_prompt(state, next_iteration=state['iteration'] + 1)),
     )

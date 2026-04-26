@@ -14,6 +14,7 @@ INSTALL_SCRIPT = REPO_ROOT / 'scripts' / 'install_ralph.sh'
 DOCTOR_SCRIPT = REPO_ROOT / 'skills' / 'doctor-ralph' / 'scripts' / 'doctor_ralph.sh'
 UNINSTALL_SCRIPT = REPO_ROOT / 'skills' / 'uninstall-ralph' / 'scripts' / 'uninstall_ralph.sh'
 START_SCRIPT = REPO_ROOT / 'skills' / 'ralph-loop' / 'scripts' / 'start_ralph.sh'
+REPORT_SCRIPT = REPO_ROOT / 'skills' / 'ralph-loop' / 'scripts' / 'report_ralph.sh'
 CONTINUE_SCRIPT = REPO_ROOT / 'skills' / 'continue-ralph-loop' / 'scripts' / 'continue_ralph.sh'
 CANCEL_SCRIPT = REPO_ROOT / 'skills' / 'cancel-ralph' / 'scripts' / 'cancel_ralph.sh'
 
@@ -43,6 +44,9 @@ class InstallAndDoctorTests(unittest.TestCase):
         env['HOME'] = str(home)
         env.pop('CODEX_HOME', None)
         env.pop('AGENTS_HOME', None)
+        env.pop('RALPH_SESSION_ID', None)
+        env.pop('CODEX_SESSION_ID', None)
+        env.pop('CODEX_THREAD_ID', None)
         return env
 
     def make_env_without_readlink(self, home: Path, fake_bin: Path) -> dict[str, str]:
@@ -568,7 +572,8 @@ class InstallAndDoctorTests(unittest.TestCase):
             doctor = self.run_script(DOCTOR_SCRIPT, cwd=workspace, env=env)
             self.assertEqual(doctor.returncode, 1)
             self.assertIn('[FAIL] State:', doctor.stdout)
-            self.assertIn('prompt must be a string', doctor.stdout)
+            self.assertIn('schema_version must be 3', doctor.stdout)
+            self.assertIn('prompt must be a non-empty string', doctor.stdout)
             self.assertIn('iteration must be an integer', doctor.stdout)
 
     def test_doctor_fails_on_progress_entry_missing_timestamp(self) -> None:
@@ -887,7 +892,7 @@ class InstallAndDoctorTests(unittest.TestCase):
                 START_SCRIPT,
                 cwd=workspace,
                 env=env,
-                args=['--max-iterations', '3', '--completion-token', '<done/>'],
+                args=['--max-iterations', '3'],
                 input_text='Ship the feature\n',
             )
 
@@ -895,7 +900,62 @@ class InstallAndDoctorTests(unittest.TestCase):
             payload = json.loads(started.stdout)
             self.assertEqual(payload['status'], 'started')
             self.assertEqual(payload['max_iterations'], 3)
-            self.assertEqual(payload['completion_token'], '<done/>')
+            self.assertEqual(payload['iteration'], 0)
+
+    def test_report_script_updates_pending_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            env = self.make_env(home)
+            env['CODEX_THREAD_ID'] = 'session-1'
+            self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
+            started = self.run_script(START_SCRIPT, cwd=workspace, env=env, input_text='Ship the feature\n')
+            self.assertEqual(started.returncode, 0, started.stderr)
+
+            reported = self.run_script(
+                REPORT_SCRIPT,
+                cwd=workspace,
+                env=env,
+                args=[
+                    '--status', 'blocked',
+                    '--summary', 'waiting on approval',
+                    '--reason', 'needs user approval',
+                    '--file', 'README.md',
+                    '--check', 'passed:unit',
+                ],
+            )
+
+            self.assertEqual(reported.returncode, 0, reported.stderr)
+            state = json.loads((workspace / '.codex' / 'ralph' / 'state.json').read_text(encoding='utf-8'))
+            self.assertEqual(state['pending_update']['status'], 'blocked')
+            self.assertEqual(state['pending_update']['session_id'], 'session-1')
+            self.assertEqual(state['claimed_session_id'], 'session-1')
+            self.assertEqual(state['pending_update']['files'], ['README.md'])
+
+    def test_report_script_requires_session_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            env = self.make_env(home)
+            self.run_script(INSTALL_SCRIPT, cwd=REPO_ROOT, env=env)
+            started = self.run_script(START_SCRIPT, cwd=workspace, env=env, input_text='Ship the feature\n')
+            self.assertEqual(started.returncode, 0, started.stderr)
+
+            reported = self.run_script(
+                REPORT_SCRIPT,
+                cwd=workspace,
+                env=env,
+                args=[
+                    '--status', 'progress',
+                    '--summary', 'updated docs',
+                ],
+            )
+
+            self.assertNotEqual(reported.returncode, 0)
+            self.assertIn('report requires --session-id', reported.stderr)
+            state = json.loads((workspace / '.codex' / 'ralph' / 'state.json').read_text(encoding='utf-8'))
+            self.assertIsNone(state['claimed_session_id'])
+            self.assertIsNone(state['pending_update'])
 
     def test_continue_script_rejects_workspace_override_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_root:
@@ -924,7 +984,6 @@ class InstallAndDoctorTests(unittest.TestCase):
 
             state_path = workspace_a / '.codex' / 'ralph' / 'state.json'
             state = json.loads(state_path.read_text(encoding='utf-8'))
-            self.assertTrue(state['active'])
             self.assertEqual(state['phase'], 'running')
             self.assertEqual(state['iteration'], 0)
 
