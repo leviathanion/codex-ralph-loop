@@ -42,7 +42,7 @@ CHECKS: passed:npm test; failed:pytest -q
 
 ## Notes
 
-- The Ralph `Stop` hook must already be installed. If it is missing, tell the user to run `$install-ralph`.
+- The Ralph `Stop` hook must already be installed. If it is missing, tell the user to run `bash <codex-ralph-root>/scripts/install_ralph.sh` from the cloned Ralph package.
 - Use `$cancel-ralph` to stop the active loop.
 - Use `$doctor-ralph` to diagnose installation or workspace state problems.
 - Recoverable Stop-hook failures leave the loop paused in `.codex/ralph/state.json` until this skill resumes it.

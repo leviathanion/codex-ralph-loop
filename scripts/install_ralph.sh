@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-ROOT_DIR="$(cd -- "${SELF_DIR}/../../.." && pwd -P)"
+ROOT_DIR="$(cd -- "${SELF_DIR}/.." && pwd -P)"
 source "${ROOT_DIR}/skills/_shared/scripts/ralph_common.sh"
 
 HOME_DIR="${HOME:?HOME is required}"

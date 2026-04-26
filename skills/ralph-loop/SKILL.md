@@ -42,11 +42,10 @@ CHECKS: passed:npm test; failed:pytest -q
 
 ## Preconditions
 
-- The Ralph hooks must already be installed. If they are missing, tell the user to run `$install-ralph`.
-- If `$install-ralph` is not available yet, tell the user to bootstrap once with:
+- The Ralph hooks must already be installed. If they are missing, tell the user to run the install script from the cloned Ralph package:
 
 ```bash
-bash <codex-ralph-root>/skills/install-ralph/scripts/install_ralph.sh
+bash <codex-ralph-root>/scripts/install_ralph.sh
 ```
 
 - Use `$cancel-ralph` to stop the active loop.

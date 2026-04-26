@@ -18,7 +18,10 @@ sys.path.insert(0, str(REPO_ROOT))
 from profile import installer as profile_installer  # noqa: E402
 from profile import doctor as profile_doctor  # noqa: E402
 
-SHELL_SCRIPTS = sorted((REPO_ROOT / 'skills').glob('**/scripts/*.sh'))
+SHELL_SCRIPTS = sorted([
+    *(REPO_ROOT / 'scripts').glob('*.sh'),
+    *(REPO_ROOT / 'skills').glob('**/scripts/*.sh'),
+])
 BANNED_CONSTRUCTS = (
     'declare -A',
     '[[ -v',

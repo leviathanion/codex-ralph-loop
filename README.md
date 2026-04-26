@@ -1,6 +1,6 @@
 # Codex Ralph
 
-Direct Codex Ralph package built from seven skills, one installed Stop-hook adapter,
+Direct Codex Ralph package built from six skills, one install script, one installed Stop-hook adapter,
 host-agnostic runtime core, and package-local profile tooling.
 
 By default it installs into:
@@ -10,10 +10,9 @@ By default it installs into:
 
 ## What is included
 
-Installed directly by `$install-ralph`:
+Installed into the user profile by `scripts/install_ralph.sh`:
 
 - `skills/ralph-loop`
-- `skills/install-ralph`
 - `skills/uninstall-ralph`
 - `skills/continue-ralph-loop`
 - `skills/ralph-help`
@@ -38,7 +37,10 @@ OpenAI's Codex docs indicate two relevant surfaces here:
 - Skills are directories with `SKILL.md`, discovered from `.agents/skills` and `~/.agents/skills`.
 - Hooks are registered in `~/.codex/hooks.json` or `<repo>/.codex/hooks.json`.
 
-This package therefore treats `install-ralph` and `uninstall-ralph` as skills with embedded scripts.
+This package deliberately keeps installation as a package script instead of an
+`install-ralph` skill, because a skill cannot be used before it is installed.
+`uninstall-ralph` remains an installed maintenance skill for removing an already
+installed profile.
 
 Runtime behavior is split cleanly:
 
@@ -52,19 +54,23 @@ Runtime behavior is split cleanly:
 
 Ralph requires Python 3.10 or newer and uses only the Python standard library.
 
-## Install directly
+## Install
 
-Use the install skill after the skills are available:
+From the cloned package root:
 
-```text
-$install-ralph
+```bash
+bash ./scripts/install_ralph.sh
 ```
 
-That skill tells Codex to run the embedded installer, which:
+That install script:
 
-- symlinks the seven skills into `$AGENTS_HOME/skills`
+- symlinks the six skills into `$AGENTS_HOME/skills`
 - installs the Python hook helpers into `$CODEX_HOME/hooks/ralph`
 - merges the Ralph `Stop` hook into `$CODEX_HOME/hooks.json`
+
+Restart Codex after the first install so the skill list refreshes.
+
+Run the same script again to repair or refresh an existing install.
 
 To remove Ralph-managed skill links, copied hooks, and Stop-hook registration:
 
@@ -72,23 +78,20 @@ To remove Ralph-managed skill links, copied hooks, and Stop-hook registration:
 $uninstall-ralph
 ```
 
-
-## Bootstrap without the skill
-
-If the install skill is not available yet, bootstrap once from the package root:
+The package uninstall script is also available when the uninstall skill is not
+available or Codex has not been restarted:
 
 ```bash
-bash ./skills/install-ralph/scripts/install_ralph.sh
+bash ./skills/uninstall-ralph/scripts/uninstall_ralph.sh
 ```
-
-After that, restart Codex and use `$install-ralph` or `$uninstall-ralph`.
 
 ## Packaging notes
 
-- This package installs the seven skills directly into `$AGENTS_HOME/skills`.
-- The skill-local `scripts/` directories are the user-facing entrypoints; profile install/uninstall mutations are implemented in `profile/installer.py`.
+- This package installs the six runtime and maintenance skills directly into `$AGENTS_HOME/skills`.
+- `scripts/install_ralph.sh` is the install, reinstall, and repair entrypoint.
+  Profile install/uninstall mutations are implemented in `profile/installer.py`.
 - Workspace-local Ralph state changes are funneled through packaged scripts so the skills do not hand-write JSON blobs.
-- Install and uninstall are transaction-safe for one caller, but they are not designed to be run concurrently. Do not run multiple `$install-ralph`/`$uninstall-ralph` commands in parallel against the same profile.
+- Install and uninstall are transaction-safe for one caller, but they are not designed to be run concurrently. Do not run multiple install/uninstall commands in parallel against the same profile.
 
 ## Runtime files
 

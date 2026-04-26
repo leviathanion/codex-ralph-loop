@@ -1,4 +1,0 @@
-interface:
-  display_name: "Install Ralph"
-  short_description: "Install Ralph skills and hooks locally"
-  default_prompt: "Use $install-ralph to install Ralph into this Codex user profile."

@@ -9,7 +9,6 @@ Explain Ralph succinctly, then tailor the rest to the user's question.
 
 ## Commands
 
-- `$install-ralph` installs Ralph into the current user profile.
 - `$uninstall-ralph` removes Ralph-managed skill links, copied hooks, and Stop-hook registration from the current user profile.
 - `$doctor-ralph` validates Ralph installation and workspace state.
 - `$ralph-loop` starts a workspace-local loop.
@@ -19,13 +18,14 @@ Explain Ralph succinctly, then tailor the rest to the user's question.
 
 ## Installation
 
-Bootstrap from the cloned package root:
+Install from the cloned package root:
 
 ```bash
-bash <codex-ralph-root>/skills/install-ralph/scripts/install_ralph.sh
+bash <codex-ralph-root>/scripts/install_ralph.sh
 ```
 
-`$install-ralph` can also install only skills or only hooks with `--skills-only` or `--hooks-only`.
+Run the same script again to repair or refresh an existing install.
+The script can install only skills or only hooks with `--skills-only` or `--hooks-only`.
 
 ## Runtime
 

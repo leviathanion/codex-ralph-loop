@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-INSTALL_SCRIPT = REPO_ROOT / 'skills' / 'install-ralph' / 'scripts' / 'install_ralph.sh'
+INSTALL_SCRIPT = REPO_ROOT / 'scripts' / 'install_ralph.sh'
 DOCTOR_SCRIPT = REPO_ROOT / 'skills' / 'doctor-ralph' / 'scripts' / 'doctor_ralph.sh'
 UNINSTALL_SCRIPT = REPO_ROOT / 'skills' / 'uninstall-ralph' / 'scripts' / 'uninstall_ralph.sh'
 START_SCRIPT = REPO_ROOT / 'skills' / 'ralph-loop' / 'scripts' / 'start_ralph.sh'
@@ -79,6 +79,30 @@ class InstallAndDoctorTests(unittest.TestCase):
             self.assertIn('[OK] Hooks:', doctor.stdout)
             self.assertIn('[OK] Progress: no progress ledger present', doctor.stdout)
             self.assertFalse((workspace / '.codex').exists())
+
+    def test_install_script_bootstraps_without_install_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_home, tempfile.TemporaryDirectory() as tmp_workspace:
+            home = Path(tmp_home)
+            workspace = Path(tmp_workspace)
+            env = self.make_env(home)
+
+            install = self.run_script(INSTALL_SCRIPT, cwd=workspace, env=env)
+
+            self.assertEqual(install.returncode, 0, install.stderr)
+            self.assertIn('Installed Codex Ralph:', install.stdout)
+            self.assertFalse((home / '.agents' / 'skills' / 'install-ralph').exists())
+            self.assertTrue((home / '.agents' / 'skills' / 'uninstall-ralph').is_symlink())
+
+            doctor = self.run_script(DOCTOR_SCRIPT, cwd=workspace, env=env)
+
+            self.assertEqual(doctor.returncode, 0, doctor.stdout)
+            self.assertIn('[OK] Skills:', doctor.stdout)
+            self.assertIn('[OK] Hooks:', doctor.stdout)
+
+            uninstall = self.run_script(UNINSTALL_SCRIPT, cwd=workspace, env=env)
+
+            self.assertEqual(uninstall.returncode, 0, uninstall.stdout)
+            self.assertFalse((home / '.agents' / 'skills' / 'uninstall-ralph').exists())
 
     def test_install_handles_non_ascii_home_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_root, tempfile.TemporaryDirectory() as tmp_workspace:

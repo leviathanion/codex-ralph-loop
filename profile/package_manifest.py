@@ -6,7 +6,6 @@ SKILL_NAMES = (
     'ralph-help',
     'cancel-ralph',
     'doctor-ralph',
-    'install-ralph',
     'uninstall-ralph',
 )
 
@@ -19,4 +18,3 @@ RUNTIME_PACKAGE_DIRS = (
 )
 
 STOP_HOOK_FILE = 'stop_continue.py'
-
